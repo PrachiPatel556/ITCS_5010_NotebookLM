@@ -10,8 +10,8 @@ flowchart LR
     Embed --> Store
     Service --> Retrieve[Vector or hybrid retrieval]
     Retrieve --> Store
-    Retrieve --> HF[Hugging Face Inference Providers]
-    Service --> HF
+    Retrieve --> LLM[Local Qwen model on CPU]
+    Service --> LLM
     Service --> Files[(Markdown artifacts)]
     Service --> Originals[(Original uploaded files)]
     Actions[GitHub Actions] --> Space[Hugging Face Space]
@@ -27,12 +27,12 @@ flowchart LR
 | `notebooklm/storage.py` | SQLite schema and notebook-scoped reads/writes for notebooks, extracted source text, chunks, embeddings, chat, and artifact records |
 | `notebooklm/ingest.py` | Text extraction for supported files and URLs, chunking, and source metadata |
 | `notebooklm/retrieval.py` | Embedding and notebook-scoped vector/hybrid retrieval |
-| `notebooklm/generation.py` | Hugging Face chat requests and formatting for cited answers, reports, and quizzes |
+| `notebooklm/generation.py` | Local model loading for chat; source-derived cited reports and quizzes |
 | `scripts/evaluate.py` | Repeated retrieval comparison on a selected notebook and question set |
 
 1. **Ingestion:** the user selects a notebook and supplies a file or URL. The service extracts text, divides it into chunks, embeds each chunk, then stores source metadata, text, and vectors under that notebook ID. Original uploaded files are saved under that notebook's source directory. Empty or unreadable sources return an error.
-2. **Chat:** a question is embedded and compared against chunks belonging only to the active notebook. The selected chunks, with source references, go through Hugging Face Inference Providers to the configured chat model. The response and conversation messages are stored under the notebook ID and displayed with citations.
-3. **Artifacts:** the service samples enabled source chunks across sources (up to 60 chunks and 40,000 context characters), asks the same chat model for a report or quiz, writes the resulting Markdown under the configured data directory, and records it for later viewing or download. The context cap means very large notebooks may not be fully represented in one artifact.
+2. **Chat:** a question is embedded and compared against chunks belonging only to the active notebook. The selected chunks, with source references, go to the local Qwen model on the app's CPU. The response and conversation messages are stored under the notebook ID and displayed with citations.
+3. **Artifacts:** the service samples enabled source chunks across sources (up to 60 chunks). Reports select up to eight complete statements from the first 8,000 sampled context characters and list them with citations. Quizzes turn the same statements into fill-in-the-blank questions with copied answers and citations. The service saves the resulting Markdown under the configured data directory. Large notebooks may not be fully represented in one artifact.
 4. **Notebook changes:** rename updates the notebook record; delete removes its related content. Switching notebooks changes the ID used for all queries and UI history.
 
 ## Storage and boundaries
@@ -43,6 +43,6 @@ The SQLite vectors are compared in process, so this design avoids an external ve
 
 ## Deployment
 
-GitHub `main` pushes trigger `.github/workflows/deploy.yml`. The workflow uses the Hugging Face `hub-sync` action, with `HF_TOKEN` and `HF_SPACE_REPO_ID` stored as GitHub Actions secrets, to copy the repository to a Gradio Space. The Space builds its Python environment from `requirements.txt`, reads the README YAML for its entry point, and reads `HF_INFERENCE_TOKEN` from a Space secret. GitHub's deployment token and the Space's inference token have different purposes and are configured separately.
+GitHub `main` pushes trigger `.github/workflows/deploy.yml`. The workflow uses the Hugging Face `hub-sync` action, with `HF_TOKEN` and `HF_SPACE_REPO_ID` stored as GitHub Actions secrets, to copy the repository to a Gradio Space. The Space builds its Python environment from `requirements.txt`, reads the README YAML for its entry point, and downloads the public Qwen model on first use. It does not use a hosted inference API or inference token. CPU Basic has no hourly charge, but Hugging Face currently requires a paid plan to create a new Gradio or Docker Space.
 
 Local files survive local app restarts. Default Hugging Face Space disk is ephemeral, so Space data can be lost on rebuild or restart. A mounted Storage Bucket plus a matching `NOTEBOOKLM_DATA_DIR` gives durable runtime storage; otherwise the deployment is a demonstration environment.

@@ -11,7 +11,7 @@ short_description: Notebook-based source chat and study artifacts
 
 # NotebookLM Clone
 
-A Gradio application for collecting sources in separate notebooks, asking source-grounded questions, and generating Markdown reports and quizzes. Sources can be PDF, PPTX, TXT, or a public web page. The app stores notebook contents locally and uses Hugging Face Inference Providers for answer and artifact generation.
+A Gradio application for collecting sources in separate notebooks, asking source-grounded questions, and generating Markdown reports and quizzes. Sources can be PDF, PPTX, TXT, or a public web page. The app stores notebook contents locally and runs a public Hugging Face language model on its own CPU for chat. Reports and quizzes use cited source statements directly, which avoids unsupported model claims in downloadable artifacts.
 
 ## Run locally
 
@@ -24,21 +24,20 @@ python -m venv .venv
 python -m pip install -r requirements.txt
 ```
 
-Copy `.env.example` to `.env`, create a Hugging Face user access token with permission to call Inference Providers, and set `HF_INFERENCE_TOKEN` in `.env`. Then start the app:
+Copy `.env.example` to `.env` if you want to change its defaults. No API key is required. Start the app:
 
 ```bash
 python app.py
 ```
 
-You can instead set `HF_INFERENCE_TOKEN` in your shell (PowerShell: `$env:HF_INFERENCE_TOKEN = "your-token"`; macOS/Linux: `export HF_INFERENCE_TOKEN="your-token"`). Shell settings take precedence over `.env`. The example file [.env.example](.env.example) lists supported settings; keep real tokens only in the Git-ignored `.env` file or a secret manager. Restart the app after changing `.env`.
+The example file [.env.example](.env.example) lists supported settings. Shell settings take precedence over `.env`. Restart the app after changing `.env`. If your old `.env` contains `HF_INFERENCE_TOKEN`, you can remove it; local generation ignores it.
 
-The first embedding run downloads `sentence-transformers/all-MiniLM-L6-v2`, so first ingestion may take longer and needs network access. Generation also needs network access and Hugging Face inference credits. Notebook and source storage works without an inference token. Hugging Face currently includes a small monthly free credit allowance; check its [current pricing](https://huggingface.co/docs/inference-providers/pricing) before a live demo.
+The first embedding run downloads `sentence-transformers/all-MiniLM-L6-v2`. The first chat answer downloads `Qwen/Qwen2.5-0.5B-Instruct` (about 1 GB of model weights). These one-time downloads need network access; later chat generation runs on the app's CPU and does not use Hugging Face Inference Providers or their credits. CPU chat can be slow, and this compact model may give weaker answers than larger hosted models. Check its answers against the cited source excerpts. Reports and quizzes are built directly from source statements and do not require a language model download.
 
 | Setting | Purpose | Default |
 | --- | --- | --- |
-| `HF_INFERENCE_TOKEN` | Hugging Face user access token for answers, reports, and quizzes | Required for generation |
-| `HF_MODEL` | Chat model served by Hugging Face Inference Providers | `Qwen/Qwen3-4B-Instruct-2507` |
-| `HF_PROVIDER` | Provider selection; `auto` lets Hugging Face choose | `auto` |
+| `LOCAL_LLM_MODEL` | Public model loaded on the app's CPU | `Qwen/Qwen2.5-0.5B-Instruct` |
+| `LOCAL_LLM_MAX_NEW_TOKENS` | Maximum tokens per chat answer; higher values take longer | `512` |
 | `NOTEBOOKLM_DATA_DIR` | Local notebook database and Markdown artifacts | `data/` locally; `/data` if that directory exists |
 | `NOTEBOOKLM_DB_PATH` | Optional explicit SQLite file location | `NOTEBOOKLM_DATA_DIR/notebooklm.db` |
 
@@ -47,16 +46,16 @@ The first embedding run downloads `sentence-transformers/all-MiniLM-L6-v2`, so f
 1. Create a notebook, select it, and optionally rename it. Each notebook keeps its own sources, chat history, and artifacts. Deleting a notebook deletes its stored content.
 2. Upload a PDF, PPTX, or TXT file, or add a public web URL. Wait for the ingestion status before asking questions. Scanned PDFs without extractable text require OCR before upload.
    Each upload is limited to 30 MB, and extracted text is limited to 500,000 characters or 400 chunks so ingestion remains practical on a small Space.
-3. Ask a question about the active notebook. The app retrieves matching source chunks, asks the configured Hugging Face model to answer from those chunks, and displays source references with the answer. Switch notebooks to view their previous conversations.
-4. Generate a report or quiz. The quiz includes an answer key. View the Markdown in the app or download the `.md` file.
+3. Ask a question about the active notebook. The app retrieves matching source chunks, runs the configured local model on those chunks, and displays source references with the answer. Switch notebooks to view their previous conversations.
+4. Generate a report or quiz. The report lists cited source findings; the quiz makes fill-in-the-blank questions from source statements and includes a cited answer key. View the Markdown in the app or download the `.md` file.
 
-Only upload material you are comfortable sending through Hugging Face Inference Providers to the selected provider. Retrieved source excerpts are included in generation requests. Public deployments share one local app storage area; this project has no user authentication or per-person isolation.
+Retrieved source excerpts stay in the running app during generation. Public deployments share one local app storage area; this project has no user authentication or per-person isolation.
 
 ## How it works
 
-The app extracts text from each source, splits it into chunks, embeds chunks with `all-MiniLM-L6-v2`, and stores vectors, extracted text, and source metadata in a notebook-scoped SQLite database. Retrieval compares vector similarity; the evaluation also compares a hybrid search approach that adds lexical matching. Relevant excerpts and source labels become the grounded context for the Hugging Face chat model. Reports and quizzes use notebook source content and are saved as Markdown.
+The app extracts text from each source, splits it into chunks, embeds chunks with `all-MiniLM-L6-v2`, and stores vectors, extracted text, and source metadata in a notebook-scoped SQLite database. Retrieval compares vector similarity; the evaluation also compares a hybrid search approach that adds lexical matching. Relevant excerpts and source labels become the grounded context for the local Qwen model used by chat. Reports and quizzes select cited source sentences and are saved as Markdown.
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for modules, data flow, and deployment design. See [EVALUATION.md](EVALUATION.md) and [EVALUATION_RUN.md](EVALUATION_RUN.md) for the measured vector versus hybrid retrieval comparison. Generated answer quality still needs a run with a Hugging Face inference token.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for modules, data flow, and deployment design. See [EVALUATION.md](EVALUATION.md) and [EVALUATION_RUN.md](EVALUATION_RUN.md) for the measured vector versus hybrid retrieval comparison. Generated answer quality still needs a reviewed run using the local model.
 
 To try a fictional sample corpus, run `python scripts/seed_examples.py`. It prints the new notebook ID. The two source files and five questions are in [examples](examples/).
 
@@ -64,7 +63,7 @@ To try a fictional sample corpus, run `python scripts/seed_examples.py`. It prin
 
 Local data lives under `NOTEBOOKLM_DATA_DIR` (default `data/` locally, or `/data` if available) and survives an ordinary local app restart. The data directory and common SQLite file extensions are ignored by Git. Back it up separately if needed. The app keeps original PDF, PPTX, and TXT uploads under `sources/<notebook-id>/`; SQLite keeps extracted text, chunks, embeddings, chat, and artifact records. Removing a source or notebook removes its saved original files. Web pages are saved as extracted text in SQLite, not as raw HTML.
 
-To deploy, create a **Gradio** Hugging Face Space and set `HF_INFERENCE_TOKEN` as a Space secret. Optionally set `HF_MODEL`, `HF_PROVIDER`, and `NOTEBOOKLM_DATA_DIR` as Space variables. A default Space has ephemeral disk: notebook data can disappear when the Space restarts, rebuilds, or stops. For durable deployment, attach a Hugging Face Storage Bucket as a writable volume and set `NOTEBOOKLM_DATA_DIR` to a directory under its mount point. This project does not configure a bucket automatically. The README YAML above identifies `app.py` as the Space entry point; `requirements.txt` supplies its Python dependencies.
+To deploy, create a **Gradio** Hugging Face Space on CPU Basic hardware. No inference secret is needed. Optionally set `LOCAL_LLM_MODEL`, `LOCAL_LLM_MAX_NEW_TOKENS`, and `NOTEBOOKLM_DATA_DIR` as Space variables. Hugging Face currently lists CPU Basic as free per hour (2 vCPU, 16 GB memory), but says a paid plan is required to create a new compute Space. Check [current hardware terms](https://huggingface.co/docs/hub/spaces-gpus) before creating one. A default Space has ephemeral disk: notebook data and downloaded model files can disappear when the Space restarts, rebuilds, or stops. For durable notebook data, attach a Hugging Face Storage Bucket as a writable volume and set `NOTEBOOKLM_DATA_DIR` to a directory under its mount point. This project does not configure a bucket automatically. The README YAML above identifies `app.py` as the Space entry point; `requirements.txt` supplies its Python dependencies.
 
 The GitHub workflow in [.github/workflows/deploy.yml](.github/workflows/deploy.yml) syncs each push to `main` to a Space. Configure these **GitHub Actions secrets** before running it:
 
@@ -73,7 +72,7 @@ The GitHub workflow in [.github/workflows/deploy.yml](.github/workflows/deploy.y
 | `HF_TOKEN` | Fine-grained Hugging Face token with write access to the target Space |
 | `HF_SPACE_REPO_ID` | Target Space ID, such as `account/space-name` |
 
-The Space needs its **own** `HF_INFERENCE_TOKEN` secret; GitHub's `HF_TOKEN` deploy secret only publishes files and is not passed to the running Space. GitHub Actions uploads repository files to the Space and excludes `.git/` and `.github/`. Check the Space build logs and perform a live source/chat/artifact smoke test after the first deploy.
+The `HF_TOKEN` deployment secret only publishes files and is not passed to the running Space. GitHub Actions uploads repository files to the Space and excludes `.git/` and `.github/`. Check the Space build logs and perform a live source/chat/artifact smoke test after the first deploy.
 
 GitHub repository: [PrachiPatel556/ITCS_5010_NotebookLM](https://github.com/PrachiPatel556/ITCS_5010_NotebookLM). Add the live Space URL and a 1–2 minute screen recording to the project submission after deployment. [DEMO_SCRIPT.md](DEMO_SCRIPT.md) gives a short recording sequence. These external deliverables require the owner's Hugging Face and GitHub credentials and are not represented as complete here.
 

@@ -5,8 +5,7 @@ from __future__ import annotations
 import shutil
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 from notebooklm.ingest import _check_public_http_url, chunk_text, ingest_text
@@ -109,33 +108,45 @@ class CoreTests(unittest.TestCase):
                 _check_public_http_url("http://example.com/")
 
     def test_quiz_contains_answer_key_and_source_map(self) -> None:
-        chunks = [{"source_name": "guide.txt", "chunk_index": 0, "text": "The answer is 42."}]
-        with patch("notebooklm.generation._generate", return_value="# Quiz\n\n## Answer Key\n\n1. 42"):
+        chunks = [{"source_name": "guide.txt", "chunk_index": 0,
+                   "text": "The shuttle replacement deadline is June 2027. The budget for the shuttle is 400,000 dollars."}]
+        with patch("notebooklm.generation._generate") as generate:
             quiz = create_artifact("quiz", chunks)
+        generate.assert_not_called()
         self.assertIn("## Answer Key", quiz)
-        self.assertIn("[S1] guide.txt, chunk 1", quiz)
-        with patch("notebooklm.generation._generate", return_value="# Quiz\n\n1. What?"):
-            with self.assertRaises(GenerationError):
-                create_artifact("quiz", chunks)
+        self.assertIn("[S1] - guide.txt, chunk 1", quiz)
+        self.assertIn("## Questions", quiz)
+        with self.assertRaises(GenerationError):
+            create_artifact("quiz", [{"source_name": "empty", "text": "Too short."}])
 
-    def test_generation_uses_configured_hugging_face_model(self) -> None:
-        reply = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="Answer [S1]"))])
-        with patch("notebooklm.generation._client") as client, patch.dict(
-            "os.environ", {"HF_MODEL": "Qwen/Qwen3-4B-Instruct-2507"}
+    def test_report_only_uses_source_statements(self) -> None:
+        chunks = [{"source_name": "shuttle.txt", "chunk_index": 1,
+                   "text": "The campus shuttle deadline is June 2027. The budget is 400,000 dollars."}]
+        with patch("notebooklm.generation._generate") as generate:
+            report = create_artifact("report", chunks)
+        generate.assert_not_called()
+        self.assertIn("The campus shuttle deadline is June 2027. [S1]", report)
+        self.assertIn("The budget is 400,000 dollars. [S1]", report)
+        self.assertIn("[S1] shuttle.txt, chunk 2", report)
+
+    def test_generation_uses_local_model_without_an_api_token(self) -> None:
+        tokenizer = MagicMock()
+        tokenizer.apply_chat_template.return_value = {"input_ids": MagicMock(shape=(1, 3))}
+        tokenizer.decode.return_value = "Answer [S1]"
+        model = MagicMock()
+        model.generate.return_value = [[1, 2, 3, 42]]
+        with patch("notebooklm.generation._local_model", return_value=(tokenizer, model)) as load, patch.dict(
+            "os.environ", {"LOCAL_LLM_MODEL": "Qwen/Qwen2.5-0.5B-Instruct", "HF_INFERENCE_TOKEN": "unused"}
         ):
-            client.return_value.chat.completions.create.return_value = reply
             self.assertEqual(_generate("Question", "Use sources", 128), "Answer [S1]")
-            request = client.return_value.chat.completions.create.call_args.kwargs
-        self.assertEqual(request["model"], "Qwen/Qwen3-4B-Instruct-2507")
-        self.assertEqual(request["max_tokens"], 128)
+        load.assert_called_once_with("Qwen/Qwen2.5-0.5B-Instruct")
+        self.assertEqual(model.generate.call_args.kwargs["max_new_tokens"], 128)
 
-    def test_generation_explains_hugging_face_token_error(self) -> None:
-        failure = Exception("Do not echo provider details")
-        failure.response = SimpleNamespace(status_code=401)
-        with patch("notebooklm.generation._client") as client:
-            client.return_value.chat.completions.create.side_effect = failure
-            with self.assertRaisesRegex(GenerationError, "inference token"):
+    def test_generation_explains_local_model_load_failure(self) -> None:
+        with patch("notebooklm.generation._local_model", side_effect=OSError("private details")):
+            with self.assertRaisesRegex(GenerationError, "local model") as error:
                 _generate("Question", "Use sources", 128)
+        self.assertNotIn("private details", str(error.exception))
 
 
 if __name__ == "__main__":
