@@ -99,7 +99,7 @@ class NotebookService:
             raise ValueError("Enter a question.")
         if method not in {"vector", "hybrid"}:
             raise ValueError("Retrieval method must be vector or hybrid.")
-        chunks = self.retriever.search(notebook_id, question, method=method, top_k=5)
+        chunks = self.retriever.search(notebook_id, question, method=method, top_k=3)
         history = self.store.list_messages(notebook_id)[-6:]
         answer = answer_question(question, chunks, history)
         citations = [

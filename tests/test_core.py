@@ -140,7 +140,7 @@ class CoreTests(unittest.TestCase):
         ):
             self.assertEqual(_generate("Question", "Use sources", 128), "Answer [S1]")
         load.assert_called_once_with("Qwen/Qwen2.5-0.5B-Instruct")
-        self.assertEqual(model.generate.call_args.kwargs["max_new_tokens"], 128)
+        self.assertEqual(model.generate.call_args.kwargs["max_new_tokens"], 120)
 
     def test_generation_explains_local_model_load_failure(self) -> None:
         with patch("notebooklm.generation._local_model", side_effect=OSError("private details")):
