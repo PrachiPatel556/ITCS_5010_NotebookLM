@@ -31,6 +31,10 @@ def _load_local_env() -> None:
 
 _load_local_env()
 
+_ZERO_GPU = bool(os.getenv("SPACES_ZERO_GPU"))
+if _ZERO_GPU:
+    import spaces
+
 
 class GenerationError(RuntimeError):
     """A user-facing error while generating text."""
@@ -42,7 +46,7 @@ def _get_model_name() -> str:
 
 @lru_cache(maxsize=2)
 def _local_model(model_name: str):
-    """Download once, then reuse the public model on this machine's CPU."""
+    """Load the public model once on CPU or register it for ZeroGPU."""
     try:
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -51,7 +55,11 @@ def _local_model(model_name: str):
 
     torch.set_num_threads(min(2, os.cpu_count() or 1))
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForCausalLM.from_pretrained(model_name, dtype=torch.float32)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name, dtype=torch.float16 if _ZERO_GPU else torch.float32
+    )
+    if _ZERO_GPU:
+        model = model.to("cuda")
     model.eval()
     return tokenizer, model
 
@@ -90,6 +98,8 @@ def _generate(prompt: str, system_instruction: str, max_output_tokens: int) -> s
             return_dict=True,
             return_tensors="pt",
         )
+        if _ZERO_GPU:
+            inputs = inputs.to(model.device)
         limit = max(1, int(os.getenv("LOCAL_LLM_MAX_NEW_TOKENS", "120")))
         with torch.inference_mode():
             output = model.generate(
@@ -109,6 +119,12 @@ def _generate(prompt: str, system_instruction: str, max_output_tokens: int) -> s
     if not result:
         raise GenerationError("The model returned an empty response. Please retry.")
     return result
+
+
+if _ZERO_GPU:
+    # Register model weights with ZeroGPU at startup; GPU work runs only in this function.
+    _local_model(_get_model_name())
+    _generate = spaces.GPU(duration=45)(_generate)
 
 
 def answer_question(

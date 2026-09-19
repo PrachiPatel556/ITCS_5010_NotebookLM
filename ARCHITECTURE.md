@@ -10,7 +10,7 @@ flowchart LR
     Embed --> Store
     Service --> Retrieve[Vector or hybrid retrieval]
     Retrieve --> Store
-    Retrieve --> LLM[Local Qwen model on CPU]
+    Retrieve --> LLM[Local Qwen model on CPU or ZeroGPU]
     Service --> LLM
     Service --> Files[(Markdown artifacts)]
     Service --> Originals[(Original uploaded files)]
@@ -31,7 +31,7 @@ flowchart LR
 | `scripts/evaluate.py` | Repeated retrieval comparison on a selected notebook and question set |
 
 1. **Ingestion:** the user selects a notebook and supplies a file or URL. The service extracts text, divides it into chunks, embeds each chunk, then stores source metadata, text, and vectors under that notebook ID. Original uploaded files are saved under that notebook's source directory. Empty or unreadable sources return an error.
-2. **Chat:** a question is embedded and compared against chunks belonging only to the active notebook. The top three chunks, shortened to fit a 2,600-character context budget, go to the local Qwen model on the app's CPU. The response and conversation messages are stored under the notebook ID and displayed with source references. Answers have a 120-token cap to reduce CPU time; larger questions may need a higher limit and more context.
+2. **Chat:** a question is embedded and compared against chunks belonging only to the active notebook. The top three chunks, shortened to fit a 2,600-character context budget, go to the Qwen model on local CPU or Space ZeroGPU. The response and conversation messages are stored under the notebook ID and displayed with source references. Answers have a 120-token default cap; larger questions may need a higher limit and more context.
 3. **Artifacts:** the service samples enabled source chunks across sources (up to 60 chunks). Reports select up to eight complete statements from the first 8,000 sampled context characters and list them with citations. Quizzes turn the same statements into fill-in-the-blank questions with copied answers and citations. The service saves the resulting Markdown under the configured data directory. Large notebooks may not be fully represented in one artifact.
 4. **Notebook changes:** rename updates the notebook record; delete removes its related content. Switching notebooks changes the ID used for all queries and UI history.
 
@@ -43,6 +43,6 @@ The SQLite vectors are compared in process, so this design avoids an external ve
 
 ## Deployment
 
-GitHub `main` pushes trigger `.github/workflows/deploy.yml`. The workflow uses the Hugging Face `hub-sync` action, with `HF_TOKEN` and `HF_SPACE_REPO_ID` stored as GitHub Actions secrets, to copy the repository to a Gradio Space. The Space builds its Python environment from `requirements.txt` and preloads the public embedding and Qwen models through the README YAML. The running Space loads the cached models into memory and performs inference on its CPU; GitHub Actions does not host the app or run model inference. It does not use a hosted inference API or inference token. CPU Basic has no hourly charge, but Hugging Face currently requires a paid plan to create a new Gradio or Docker Space.
+GitHub `main` pushes trigger `.github/workflows/deploy.yml`. The workflow uses the Hugging Face `hub-sync` action, with `HF_TOKEN` and `HF_SPACE_REPO_ID` stored as GitHub Actions secrets, to copy the repository to a Gradio Space. The Space builds its Python environment from `requirements.txt` and preloads the public embedding and Qwen models through the README YAML. On ZeroGPU, the Qwen model registers on the GPU at startup and chat inference runs in a `spaces.GPU` function; embeddings and notebook operations remain on CPU. Local development uses CPU inference. GitHub Actions does not host the app or run model inference. The app does not use a hosted inference API or inference token. Eligible free personal accounts can create up to two ZeroGPU Gradio Spaces; ordinary CPU Basic Gradio creation requires a paid plan.
 
 Local files survive local app restarts. Default Hugging Face Space disk is ephemeral, so Space data can be lost on rebuild or restart. A mounted Storage Bucket plus a matching `NOTEBOOKLM_DATA_DIR` gives durable runtime storage; otherwise the deployment is a demonstration environment.

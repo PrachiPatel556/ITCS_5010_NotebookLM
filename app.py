@@ -9,6 +9,9 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+if os.getenv("SPACES_ZERO_GPU"):
+    import spaces  # noqa: F401 - ZeroGPU must patch torch before other imports.
+
 import gradio as gr
 
 
