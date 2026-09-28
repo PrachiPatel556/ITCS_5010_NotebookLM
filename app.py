@@ -9,9 +9,6 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-if os.getenv("SPACES_ZERO_GPU"):
-    import spaces  # noqa: F401 - ZeroGPU must patch torch before other imports.
-
 import gradio as gr
 
 
@@ -38,6 +35,7 @@ def _load_local_env() -> None:
 _load_local_env()
 
 from notebooklm.service import NotebookService
+from notebooklm.generation import generation_model_name, is_generation_configured
 
 
 FILE_TYPES = [".pdf", ".pptx", ".txt"]
@@ -296,6 +294,13 @@ def _compare_retrieval(notebook_id: str | None, question: str) -> tuple[str, str
 def build_app() -> gr.Blocks:
     with gr.Blocks(title="NotebookLM Clone") as demo:
         gr.Markdown("# NotebookLM Clone\nOrganize sources by notebook, ask grounded questions, and create study materials.")
+        if is_generation_configured():
+            gr.Markdown(f"Chat provider: **Groq** (`{html.escape(generation_model_name())}`)")
+        else:
+            gr.Markdown(
+                "Chat generation needs `GROQ_API_KEY`. Add it to `.env` locally or as a "
+                "Hugging Face Space **Secret**. Source ingestion and retrieval still work without it."
+            )
         status = gr.Markdown("")
 
         with gr.Row():

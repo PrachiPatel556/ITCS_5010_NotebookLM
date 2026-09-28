@@ -1,0 +1,8 @@
+# Lightweight dependencies used by GitHub Actions. The embedding model runtime
+# is exercised on the Space; unit tests inject deterministic vectors.
+beautifulsoup4>=4.12,<5
+gradio>=5,<7
+groq>=0.31,<2
+pypdf>=4,<7
+python-pptx>=0.6.23,<2
+websockets>=13,<17

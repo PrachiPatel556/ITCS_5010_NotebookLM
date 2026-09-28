@@ -1,4 +1,4 @@
-"""Run one small local-model generation without printing source text."""
+"""Run one small Groq generation without printing credentials or source text."""
 
 from __future__ import annotations
 

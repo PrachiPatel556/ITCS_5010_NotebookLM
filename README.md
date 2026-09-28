@@ -9,16 +9,37 @@ app_file: app.py
 short_description: Notebook-based source chat and study artifacts
 preload_from_hub:
   - sentence-transformers/all-MiniLM-L6-v2
-  - Qwen/Qwen2.5-0.5B-Instruct
 ---
 
 # NotebookLM Clone
 
-A Gradio application for collecting sources in separate notebooks, asking source-grounded questions, and generating Markdown reports and quizzes. Sources can be PDF, PPTX, TXT, or a public web page. The app stores notebook contents locally and runs a public Hugging Face language model on local CPU or Space ZeroGPU for chat. Reports and quizzes use cited source statements directly, which avoids unsupported model claims in downloadable artifacts.
+A full-stack, NotebookLM-style RAG application. Users create separate notebooks, add PDF, PPTX, TXT, and public web sources, ask source-grounded questions with citations, compare retrieval strategies, and download reports or quizzes.
+
+The deployment is designed for a student budget:
+
+- **Hugging Face ZeroGPU Space:** hosts the Gradio application for free on an eligible personal account.
+- **Local Hugging Face embedding model:** `all-MiniLM-L6-v2` runs on the Space CPU; no Hugging Face inference token or paid endpoint is used.
+- **Groq free API:** generates chat answers from retrieved excerpts. The API key stays in a Space Secret.
+- **SQLite:** stores notebook metadata, extracted text, vectors, chat, and artifacts without an external database bill.
+
+The default Space filesystem is ephemeral. That is acceptable for a class demonstration, but data can disappear when the Space restarts or rebuilds.
+
+## Features
+
+- Multiple isolated notebooks with create, rename, switch, and delete workflows
+- PDF, PPTX, TXT, single-page URL, and URL-hosted PDF ingestion
+- Overlapping chunking with source metadata retained for citations
+- Semantic vector retrieval and hybrid semantic/lexical retrieval
+- Groq-generated answers constrained to retrieved notebook excerpts
+- Visible citations with source name, chunk number, excerpt, and score
+- Grounded Markdown report and quiz generation with downloads
+- SQLite storage abstraction and notebook-scoped raw file/artifact folders
+- Reproducible RAG evaluation script and included sample corpus
+- GitHub Actions tests plus automatic Hugging Face Space deployment
 
 ## Run locally
 
-Use Python 3.12 locally if possible; the Space uses ZeroGPU-supported Python 3.12.12. From the directory containing `app.py`:
+Use Python 3.12 if possible. From the directory containing `app.py`:
 
 ```bash
 python -m venv .venv
@@ -27,61 +48,80 @@ python -m venv .venv
 python -m pip install -r requirements.txt
 ```
 
-Copy `.env.example` to `.env` if you want to change its defaults. No API key is required. Start the app:
+Copy `.env.example` to `.env`, replace the placeholder with your Groq key, and start the app:
 
 ```bash
 python app.py
 ```
 
-The example file [.env.example](.env.example) lists supported settings. Shell settings take precedence over `.env`. Restart the app after changing `.env`. If your old `.env` contains `HF_INFERENCE_TOKEN`, you can remove it; local generation ignores it.
+Do not commit `.env`; it is already ignored. The first ingestion downloads the public MiniLM embedding model. Chat calls Groq and therefore requires internet access and `GROQ_API_KEY`. Reports and quizzes are assembled directly from cited source statements and do not make another LLM call.
 
-Locally, the first embedding run downloads `sentence-transformers/all-MiniLM-L6-v2` and the first chat answer downloads `Qwen/Qwen2.5-0.5B-Instruct` (about 1 GB of model weights). The Space preloads both during its build through the YAML above. Locally, chat runs on CPU. On a ZeroGPU Space, model weights are registered at startup and chat runs inside a `spaces.GPU` function; embeddings, ingestion, and storage remain on CPU. Neither path uses Hugging Face Inference Providers or their credits. Chat retrieves up to three chunks and limits answers to 120 tokens by default. Check model answers against the cited source excerpts. Reports and quizzes are built directly from source statements and do not require a language model download.
+| Setting | Required | Purpose | Default |
+| --- | --- | --- | --- |
+| `GROQ_API_KEY` | For chat | Private Groq credential | none |
+| `GROQ_MODEL` | No | Groq chat model | `openai/gpt-oss-20b` |
+| `GROQ_MAX_COMPLETION_TOKENS` | No | Maximum answer tokens | `350` |
+| `GROQ_TIMEOUT_SECONDS` | No | Provider request timeout | `30` |
+| `NOTEBOOKLM_DATA_DIR` | No | Database, uploads, and artifacts root | `data/`, or `/data` when mounted |
+| `NOTEBOOKLM_DB_PATH` | No | Explicit SQLite path override | `<data-dir>/notebooklm.db` |
 
-| Setting | Purpose | Default |
-| --- | --- | --- |
-| `LOCAL_LLM_MODEL` | Public chat model loaded locally or on Space ZeroGPU | `Qwen/Qwen2.5-0.5B-Instruct` |
-| `LOCAL_LLM_MAX_NEW_TOKENS` | Maximum tokens per chat answer (up to 512); lower values are faster | `120` |
-| `NOTEBOOKLM_DATA_DIR` | Local notebook database and Markdown artifacts | `data/` locally; `/data` if that directory exists |
-| `NOTEBOOKLM_DB_PATH` | Optional explicit SQLite file location | `NOTEBOOKLM_DATA_DIR/notebooklm.db` |
+## Application flow
 
-## Use the app
+1. Create and select a notebook.
+2. Upload a PDF, PPTX, or TXT file, or add a public URL. Each upload is limited to 30 MB; extracted text is limited to 500,000 characters and 400 chunks.
+3. Ask a question. The app embeds the question, retrieves the top three notebook chunks, sends only those excerpts and limited conversation context to Groq, and saves the answer with citations.
+4. Generate a report or quiz. The artifact is stored under that notebook, displayed in the app, and downloadable as Markdown.
+5. Use the Retrieval comparison tab or `scripts/evaluate.py` to compare vector and hybrid results.
 
-1. Create a notebook, select it, and optionally rename it. Each notebook keeps its own sources, chat history, and artifacts. Deleting a notebook deletes its stored content.
-2. Upload a PDF, PPTX, or TXT file, or add a public web URL. Wait for the ingestion status before asking questions. Scanned PDFs without extractable text require OCR before upload.
-   Each upload is limited to 30 MB, and extracted text is limited to 500,000 characters or 400 chunks so ingestion remains practical on a small Space.
-3. Ask a question about the active notebook. The app retrieves matching source chunks, runs the configured local model on those chunks, and displays source references with the answer. Switch notebooks to view their previous conversations.
-4. Generate a report or quiz. The report lists cited source findings; the quiz makes fill-in-the-blank questions from source statements and includes a cited answer key. View the Markdown in the app or download the `.md` file.
+Scanned PDFs need OCR before upload. Public deployments share one app data area and do not authenticate or isolate visitors, so only use demonstration documents.
 
-Retrieved source excerpts stay in the running app during generation. Public deployments share one local app storage area; this project has no user authentication or per-person isolation.
+## Tests and evaluation
 
-## How it works
+Run the fast suite without making model or Groq calls:
 
-The app extracts text from each source, splits it into chunks, embeds chunks with `all-MiniLM-L6-v2`, and stores vectors, extracted text, and source metadata in a notebook-scoped SQLite database. Retrieval compares vector similarity; the evaluation also compares a hybrid search approach that adds lexical matching. Relevant excerpts and source labels become the grounded context for the local Qwen model used by chat. Reports and quizzes select cited source sentences and are saved as Markdown.
+```bash
+python -m unittest discover -s tests -v
+```
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for modules and data flow, [DEPLOYMENT.md](DEPLOYMENT.md) for the exact Hugging Face and GitHub setup, and [EVALUATION.md](EVALUATION.md) and [EVALUATION_RUN.md](EVALUATION_RUN.md) for the measured vector versus hybrid retrieval comparison. Generated answer quality still needs a reviewed run using the local model.
+Seed a repeatable fictional corpus and run the retrieval evaluation:
 
-To try a fictional sample corpus, run `python scripts/seed_examples.py`. It prints the new notebook ID. The two source files and five questions are in [examples](examples/).
+```bash
+python scripts/seed_examples.py
+python scripts/evaluate.py --notebook-id YOUR_ID --questions examples/questions.json --top-k 2 --output evaluation-run.md
+```
 
-## Data and deployment
+Add `--generate` to evaluate Groq answers as well. See [EVALUATION.md](EVALUATION.md) and [EVALUATION_RUN.md](EVALUATION_RUN.md) for the method and recorded sample retrieval run.
 
-Local data lives under `NOTEBOOKLM_DATA_DIR` (default `data/` locally, or `/data` if available) and survives an ordinary local app restart. The data directory and common SQLite file extensions are ignored by Git. Back it up separately if needed. The app keeps original PDF, PPTX, and TXT uploads under `sources/<notebook-id>/`; SQLite keeps extracted text, chunks, embeddings, chat, and artifact records. Removing a source or notebook removes its saved original files. Web pages are saved as extracted text in SQLite, not as raw HTML.
+## Free Hugging Face deployment
 
-To deploy on an eligible free personal account, create a **Gradio** Hugging Face Space and choose **ZeroGPU** hardware. Hugging Face currently allows up to two free ZeroGPU Spaces for personal accounts in good standing with a verified email and an account older than 30 days. The ordinary CPU Basic Gradio creation path requires a paid plan. [ZeroGPU eligibility and runtime requirements](https://huggingface.co/docs/hub/spaces-zerogpu) No inference secret is needed. Optionally set `LOCAL_LLM_MODEL`, `LOCAL_LLM_MAX_NEW_TOKENS`, and `NOTEBOOKLM_DATA_DIR` as Space variables. If you change the model, update `preload_from_hub` above too. A default Space has ephemeral disk: notebook data can disappear when the Space restarts, rebuilds, or stops. For durable notebook data, attach a Hugging Face Storage Bucket as a writable volume and set `NOTEBOOKLM_DATA_DIR` to a directory under its mount point. This project does not configure a bucket automatically. The README YAML above identifies `app.py` as the Space entry point; `requirements.txt` supplies its Python dependencies.
+The complete setup is in [DEPLOYMENT.md](DEPLOYMENT.md). In short:
 
-The GitHub workflow in [.github/workflows/deploy.yml](.github/workflows/deploy.yml) syncs each push to `main` to a Space. GitHub Actions only publishes the repository; the Space installs dependencies, preloads the model during its build, and runs chat inference on shared ZeroGPU hardware. Model weights and notebook data are not committed to Git. Configure these **GitHub Actions secrets** before running the workflow:
+1. Create a **Gradio** Space using **ZeroGPU** hardware. Hugging Face currently permits up to two such Spaces for free personal accounts in good standing with a verified email and an account older than 30 days. CPU Basic has no hourly charge, but creating compute-backed Gradio Spaces currently requires a paid plan; ZeroGPU is the free account exception.
+2. Add `GROQ_API_KEY` under the Space's **Settings → Secrets**. Never add it as a public Variable or repository file.
+3. Create a fine-grained Hugging Face write token scoped to the Space.
+4. In GitHub, add `HF_TOKEN` as an Actions secret and `HF_SPACE_REPO_ID` (for example, `prachi2712/notebooklm-clone`) as an Actions variable.
+5. Push `main`. [.github/workflows/deploy.yml](.github/workflows/deploy.yml) runs tests and mirrors the repository to the Space.
 
-| Secret | Value |
-| --- | --- |
-| `HF_TOKEN` | Fine-grained Hugging Face token with write access to the target Space |
-| `HF_SPACE_REPO_ID` | Target Space ID, such as `account/space-name` |
+GitHub Actions never receives the Groq key. Hugging Face keeps Space secrets outside the repository, so automated code syncs do not overwrite the key. Groq free-plan rate limits apply, and a public Space uses the owner's shared Groq allowance.
 
-For the `prachi2712` account, `HF_SPACE_REPO_ID` must include the actual Space name, for example `prachi2712/notebooklm-clone`; the username alone is insufficient. Push the committed project to the GitHub repository's `main` branch to start the workflow. The `HF_TOKEN` deployment secret only publishes files and is not passed to the running Space. GitHub Actions uploads repository files to the Space and excludes `.git/` and `.github/`. Check the Space build logs and perform a live source/chat/artifact smoke test after the first deploy. ZeroGPU requests use a shared GPU queue and daily quota; free logged-in users currently receive five minutes of daily GPU time, while unauthenticated visitors receive two minutes.
+## Documentation
 
-GitHub repository: [PrachiPatel556/ITCS_5010_NotebookLM](https://github.com/PrachiPatel556/ITCS_5010_NotebookLM). Add the live Space URL and a 1–2 minute screen recording to the project submission after deployment. [DEMO_SCRIPT.md](DEMO_SCRIPT.md) gives a short recording sequence. These external deliverables require the owner's Hugging Face and GitHub credentials and are not represented as complete here.
+- [Architecture and data flow](ARCHITECTURE.md)
+- [Deployment checklist and troubleshooting](DEPLOYMENT.md)
+- [RAG evaluation method](EVALUATION.md)
+- [Deployment demonstration script](DEMO_SCRIPT.md)
+
+GitHub repository: [PrachiPatel556/ITCS_5010_NotebookLM](https://github.com/PrachiPatel556/ITCS_5010_NotebookLM)
+
+After deployment, add the live Space URL and the 1–2 minute recording URL to this README or the course submission.
 
 ## References
 
-- [Hugging Face Spaces configuration](https://huggingface.co/docs/hub/spaces-config-reference)
-- [Hugging Face Spaces dependencies](https://huggingface.co/docs/hub/spaces-dependencies)
-- [Hugging Face GitHub Actions sync](https://huggingface.co/docs/hub/spaces-github-actions)
-- [Hugging Face Spaces disk usage](https://huggingface.co/docs/hub/spaces-storage)
+- [Hugging Face Spaces overview](https://huggingface.co/docs/hub/en/spaces-overview)
+- [Hugging Face ZeroGPU](https://huggingface.co/docs/hub/spaces-zerogpu)
+- [Hugging Face Space configuration](https://huggingface.co/docs/hub/spaces-config-reference)
+- [Hugging Face Space storage](https://huggingface.co/docs/hub/spaces-storage)
+- [Hugging Face GitHub Actions deployment](https://huggingface.co/docs/hub/spaces-github-actions)
+- [Groq text generation](https://console.groq.com/docs/text-chat)
+- [Groq supported models](https://console.groq.com/docs/models)
+- [Groq rate limits](https://console.groq.com/docs/rate-limits)

@@ -26,7 +26,9 @@ def _model(model_name: str) -> Any:
         from sentence_transformers import SentenceTransformer
     except ImportError as exc:
         raise RuntimeError("Install sentence-transformers to enable source embeddings") from exc
-    return SentenceTransformer(model_name)
+    # Keep embeddings on CPU even when the hosting Space has ZeroGPU hardware.
+    # Chat generation is remote, so normal app requests never need GPU quota.
+    return SentenceTransformer(model_name, device="cpu")
 
 
 def embed_texts(texts: Sequence[str], model_name: str = DEFAULT_MODEL) -> list[list[float]]:

@@ -1,4 +1,4 @@
-"""Grounded LLM generation for notebook chat and Markdown artifacts."""
+"""Grounded Groq generation for notebook chat and Markdown artifacts."""
 
 from __future__ import annotations
 
@@ -7,6 +7,9 @@ import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Mapping, Sequence
+
+
+DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b"
 
 
 def _load_local_env() -> None:
@@ -31,37 +34,42 @@ def _load_local_env() -> None:
 
 _load_local_env()
 
-_ZERO_GPU = bool(os.getenv("SPACES_ZERO_GPU"))
-if _ZERO_GPU:
-    import spaces
-
-
 class GenerationError(RuntimeError):
     """A user-facing error while generating text."""
 
 
 def _get_model_name() -> str:
-    return os.getenv("LOCAL_LLM_MODEL", "Qwen/Qwen2.5-0.5B-Instruct").strip()
+    return os.getenv("GROQ_MODEL", DEFAULT_GROQ_MODEL).strip() or DEFAULT_GROQ_MODEL
+
+
+def _positive_number(name: str, default: str, number_type: type[int] | type[float]) -> int | float:
+    try:
+        value = number_type(os.getenv(name, default))
+    except (TypeError, ValueError) as exc:
+        raise GenerationError(f"{name} must be a positive number.") from exc
+    if value <= 0:
+        raise GenerationError(f"{name} must be a positive number.")
+    return value
 
 
 @lru_cache(maxsize=2)
-def _local_model(model_name: str):
-    """Load the public model once on CPU or register it for ZeroGPU."""
+def _groq_client(api_key: str, timeout_seconds: float):
+    """Build one reusable Groq client per credential/timeout combination."""
     try:
-        import torch
-        from transformers import AutoModelForCausalLM, AutoTokenizer
+        from groq import Groq
     except ImportError as exc:
-        raise GenerationError("Install the requirements to run the local language model.") from exc
+        raise GenerationError("Install the project requirements to enable Groq generation.") from exc
+    return Groq(api_key=api_key, timeout=timeout_seconds, max_retries=2)
 
-    torch.set_num_threads(min(2, os.cpu_count() or 1))
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name, dtype=torch.float16 if _ZERO_GPU else torch.float32
-    )
-    if _ZERO_GPU:
-        model = model.to("cuda")
-    model.eval()
-    return tokenizer, model
+
+def is_generation_configured() -> bool:
+    """Return whether the server has the secret needed for chat generation."""
+    return bool(os.getenv("GROQ_API_KEY", "").strip())
+
+
+def generation_model_name() -> str:
+    """Return the configured public model identifier without exposing credentials."""
+    return _get_model_name()
 
 
 def _source_context(chunks: Sequence[Mapping], max_chars: int = 2600, per_chunk_chars: int = 800) -> str:
@@ -84,47 +92,52 @@ def _source_context(chunks: Sequence[Mapping], max_chars: int = 2600, per_chunk_
 
 
 def _generate(prompt: str, system_instruction: str, max_output_tokens: int) -> str:
-    try:
-        import torch
+    api_key = os.getenv("GROQ_API_KEY", "").strip()
+    if not api_key:
+        raise GenerationError(
+            "Chat is not configured. Set GROQ_API_KEY in the local .env file or as a "
+            "Hugging Face Space Secret, then restart the app."
+        )
 
-        tokenizer, model = _local_model(_get_model_name())
-        inputs = tokenizer.apply_chat_template(
-            [
+    try:
+        timeout_seconds = float(_positive_number("GROQ_TIMEOUT_SECONDS", "30", float))
+        configured_limit = int(_positive_number("GROQ_MAX_COMPLETION_TOKENS", "350", int))
+        model_name = _get_model_name()
+        request = {
+            "model": model_name,
+            "messages": [
                 {"role": "system", "content": system_instruction},
                 {"role": "user", "content": prompt},
             ],
-            add_generation_prompt=True,
-            tokenize=True,
-            return_dict=True,
-            return_tensors="pt",
-        )
-        if _ZERO_GPU:
-            inputs = inputs.to(model.device)
-        limit = max(1, int(os.getenv("LOCAL_LLM_MAX_NEW_TOKENS", "120")))
-        with torch.inference_mode():
-            output = model.generate(
-                **inputs,
-                max_new_tokens=min(max_output_tokens, limit),
-                do_sample=False,
-                pad_token_id=tokenizer.eos_token_id,
-            )
-        result = tokenizer.decode(output[0][inputs["input_ids"].shape[-1]:], skip_special_tokens=True).strip()
+            "temperature": 0,
+            "max_completion_tokens": min(max_output_tokens, configured_limit),
+        }
+        # GPT-OSS can spend completion tokens on reasoning. Low effort is enough
+        # for short, source-grounded answers and preserves room for the answer.
+        if model_name.startswith("openai/gpt-oss-"):
+            request["reasoning_effort"] = "low"
+        completion = _groq_client(api_key, timeout_seconds).chat.completions.create(**request)
+        result = str(completion.choices[0].message.content or "").strip()
     except GenerationError:
         raise
     except Exception as exc:
-        raise GenerationError(
-            "The local model could not generate a response. Check that the model can be downloaded "
-            "on first use and that this machine has enough free memory."
-        ) from exc
+        status_code = getattr(exc, "status_code", None)
+        try:
+            status_code = int(status_code) if status_code is not None else None
+        except (TypeError, ValueError):
+            status_code = None
+        if status_code in {401, 403}:
+            message = "Groq rejected the API key. Replace the GROQ_API_KEY secret and restart the app."
+        elif status_code == 429:
+            message = "The Groq rate limit was reached. Wait for the limit to reset and try again."
+        elif status_code is not None and status_code >= 500:
+            message = "Groq is temporarily unavailable. Please try again shortly."
+        else:
+            message = "Could not reach Groq for answer generation. Check the Space logs and try again."
+        raise GenerationError(message) from exc
     if not result:
-        raise GenerationError("The model returned an empty response. Please retry.")
+        raise GenerationError("Groq returned an empty response. Please retry.")
     return result
-
-
-if _ZERO_GPU:
-    # Register model weights with ZeroGPU at startup; GPU work runs only in this function.
-    _local_model(_get_model_name())
-    _generate = spaces.GPU(duration=45)(_generate)
 
 
 def answer_question(

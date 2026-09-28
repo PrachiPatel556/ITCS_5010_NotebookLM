@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import shutil
 import unittest
 from pathlib import Path
@@ -9,7 +10,7 @@ from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 from notebooklm.ingest import _check_public_http_url, chunk_text, ingest_text
-from notebooklm.generation import GenerationError, _generate, create_artifact
+from notebooklm.generation import GenerationError, _generate, _groq_client, create_artifact
 from notebooklm.retrieval import Retriever
 from notebooklm.service import NotebookService
 from notebooklm.storage import NotebookStore
@@ -129,24 +130,58 @@ class CoreTests(unittest.TestCase):
         self.assertIn("The budget is 400,000 dollars. [S1]", report)
         self.assertIn("[S1] shuttle.txt, chunk 2", report)
 
-    def test_generation_uses_local_model_without_an_api_token(self) -> None:
-        tokenizer = MagicMock()
-        tokenizer.apply_chat_template.return_value = {"input_ids": MagicMock(shape=(1, 3))}
-        tokenizer.decode.return_value = "Answer [S1]"
-        model = MagicMock()
-        model.generate.return_value = [[1, 2, 3, 42]]
-        with patch("notebooklm.generation._local_model", return_value=(tokenizer, model)) as load, patch.dict(
-            "os.environ", {"LOCAL_LLM_MODEL": "Qwen/Qwen2.5-0.5B-Instruct", "HF_INFERENCE_TOKEN": "unused"}
+    def test_generation_uses_groq_without_exposing_the_key(self) -> None:
+        response = MagicMock()
+        response.choices = [MagicMock(message=MagicMock(content="Answer [S1]"))]
+        client = MagicMock()
+        client.chat.completions.create.return_value = response
+        with patch("notebooklm.generation._groq_client", return_value=client) as load, patch.dict(
+            "os.environ",
+            {
+                "GROQ_API_KEY": "test-secret-key",
+                "GROQ_MODEL": "openai/gpt-oss-20b",
+                "GROQ_MAX_COMPLETION_TOKENS": "120",
+                "GROQ_TIMEOUT_SECONDS": "15",
+            },
         ):
             self.assertEqual(_generate("Question", "Use sources", 128), "Answer [S1]")
-        load.assert_called_once_with("Qwen/Qwen2.5-0.5B-Instruct")
-        self.assertEqual(model.generate.call_args.kwargs["max_new_tokens"], 120)
+        load.assert_called_once_with("test-secret-key", 15.0)
+        request = client.chat.completions.create.call_args.kwargs
+        self.assertEqual(request["model"], "openai/gpt-oss-20b")
+        self.assertEqual(request["max_completion_tokens"], 120)
+        self.assertEqual(request["reasoning_effort"], "low")
+        self.assertNotIn("test-secret-key", str(request))
 
-    def test_generation_explains_local_model_load_failure(self) -> None:
-        with patch("notebooklm.generation._local_model", side_effect=OSError("private details")):
-            with self.assertRaisesRegex(GenerationError, "local model") as error:
+    def test_generation_explains_groq_rate_limit_without_private_details(self) -> None:
+        failure = RuntimeError("private provider details")
+        failure.status_code = 429
+        client = MagicMock()
+        client.chat.completions.create.side_effect = failure
+        with patch("notebooklm.generation._groq_client", return_value=client), patch.dict(
+            "os.environ", {"GROQ_API_KEY": "test-secret-key"}
+        ):
+            with self.assertRaisesRegex(GenerationError, "rate limit") as error:
                 _generate("Question", "Use sources", 128)
-        self.assertNotIn("private details", str(error.exception))
+        self.assertNotIn("private provider details", str(error.exception))
+
+    def test_generation_requires_a_groq_key(self) -> None:
+        with patch.dict("os.environ", {"GROQ_API_KEY": ""}):
+            with self.assertRaisesRegex(GenerationError, "GROQ_API_KEY"):
+                _generate("Question", "Use sources", 128)
+
+    def test_generation_rejects_invalid_numeric_configuration(self) -> None:
+        with patch.dict(
+            "os.environ", {"GROQ_API_KEY": "test-secret-key", "GROQ_TIMEOUT_SECONDS": "invalid"}
+        ):
+            with self.assertRaisesRegex(GenerationError, "GROQ_TIMEOUT_SECONDS"):
+                _generate("Question", "Use sources", 128)
+
+    def test_installed_groq_sdk_supports_request_parameters(self) -> None:
+        client = _groq_client("validation-only", 1.0)
+        parameters = inspect.signature(client.chat.completions.create).parameters
+        self.assertTrue(
+            {"model", "messages", "max_completion_tokens", "reasoning_effort"}.issubset(parameters)
+        )
 
 
 if __name__ == "__main__":

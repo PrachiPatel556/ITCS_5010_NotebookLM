@@ -28,6 +28,14 @@ def _normalize_text(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
 
 
+def _decode_text(data: bytes) -> str:
+    """Decode common document/web encodings without optional detector packages."""
+    try:
+        return data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return data.decode("cp1252", errors="replace")
+
+
 def chunk_text(text: str, chunk_size: int = 1200, overlap: int = 200) -> list[str]:
     """Split on words into approximately character-sized overlapping chunks."""
     if chunk_size < 100 or overlap < 0 or overlap >= chunk_size:
@@ -104,10 +112,7 @@ def _extract_file(path: Path) -> tuple[str, str]:
         return "pdf", _extract_pdf(data)
     if extension == ".pptx":
         return "pptx", _extract_pptx(data)
-    try:
-        return "txt", _normalize_text(data.decode("utf-8-sig"))
-    except UnicodeDecodeError:
-        return "txt", _normalize_text(data.decode("cp1252", errors="replace"))
+    return "txt", _normalize_text(_decode_text(data))
 
 
 def ingest_text(store: NotebookStore, notebook_id: str, name: str, text: str,
@@ -115,7 +120,7 @@ def ingest_text(store: NotebookStore, notebook_id: str, name: str, text: str,
                 model_name: str = DEFAULT_MODEL,
                 embedder: Callable[[Sequence[str]], Sequence[Sequence[float]]] | None = None
                 ) -> dict[str, Any]:
-    """Index extracted text. An embedder can be injected for tests or local models."""
+    """Index extracted text. An embedder can be injected for tests."""
     normalized = _normalize_text(text)
     if not normalized:
         raise ValueError("Source contains no extractable text (scanned PDFs require OCR)")
@@ -256,14 +261,16 @@ def ingest_url(store: NotebookStore, notebook_id: str, url: str,
         text = _extract_pdf(body)
         name = Path(urlparse(final_url).path).name or final_url
     elif content_type == "text/plain":
-        text = _normalize_text(body.decode("utf-8-sig", errors="replace"))
+        text = _normalize_text(_decode_text(body))
         name = final_url
     else:
         try:
             from bs4 import BeautifulSoup
         except ImportError as exc:
             raise RuntimeError("Install beautifulsoup4 to ingest web pages") from exc
-        soup = BeautifulSoup(body, "html.parser")
+        # Pass decoded text so BeautifulSoup does not depend on whichever
+        # optional charset detector happens to be installed in the runtime.
+        soup = BeautifulSoup(_decode_text(body), "html.parser")
         name = (soup.title.get_text(" ", strip=True) if soup.title else "") or final_url
         for element in soup(["script", "style", "noscript", "nav", "footer", "header", "title"]):
             element.decompose()

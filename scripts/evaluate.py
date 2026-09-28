@@ -107,7 +107,7 @@ def main() -> int:
     parser.add_argument("--notebook-id", required=True, help="ID of an existing notebook")
     parser.add_argument("--questions", type=Path, required=True, help="Text lines or JSON question list")
     parser.add_argument("--output", type=Path, help="Write Markdown to this path (default: stdout)")
-    parser.add_argument("--generate", action="store_true", help="Include local model answers for each retrieval result (can be slow on CPU)")
+    parser.add_argument("--generate", action="store_true", help="Include Groq answers (requires GROQ_API_KEY)")
     parser.add_argument("--top-k", type=int, default=5, help="Number of retrieved chunks per method (default: 5)")
     args = parser.parse_args()
 

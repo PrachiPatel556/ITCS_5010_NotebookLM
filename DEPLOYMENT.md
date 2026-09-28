@@ -1,27 +1,102 @@
-# Deploy to Hugging Face Spaces from GitHub
+# Free deployment to Hugging Face Spaces
 
-This repository has the two YAML pieces needed for automatic deployment:
+## Recommended option
 
-- `.github/workflows/deploy.yml` is the GitHub Actions workflow. It syncs each push to `main` to a Hugging Face Space.
-- The YAML header at the top of `README.md` is the Space configuration. Hugging Face uses it to select Gradio, run `app.py`, and preload the embedding and chat models during the build. Hugging Face does not need a separate `space.yaml` file.
+Use a **public Gradio ZeroGPU Space** for the application and the **Groq free API** for chat generation.
 
-The model files are downloaded by the Space during its build. GitHub Actions only uploads this repository's code and configuration. On ZeroGPU, answers use the Space's shared GPU through `spaces.GPU`, without an Inference Providers API token or per-request inference credits.
+Why this is the best fit for this project:
+
+- The assignment requires a Hugging Face Space URL.
+- Hugging Face currently lets eligible free personal accounts host up to two ZeroGPU Gradio Spaces.
+- The public MiniLM embedding model runs locally on CPU and needs no Hugging Face inference token.
+- Groq avoids loading a large chat model in the Space and uses the API key you already have.
+- A Static Space is not suitable: its Python runs in the visitor's browser, cannot safely hold a shared Groq secret, and is incompatible with this server-side SQLite/upload design.
+
+Eligibility for free ZeroGPU hosting currently requires a personal account in good standing, a verified email, and an account older than 30 days. If the account is not eligible, there is no secure drop-in Static Space version of this architecture; wait until eligible, use a qualifying account you own, or ask the instructor whether another host is acceptable.
+
+## Secrets and variables
+
+Three values are used, in two different systems:
+
+| Location | Type | Name | Value |
+| --- | --- | --- | --- |
+| Hugging Face Space | Secret | `GROQ_API_KEY` | Your `gsk_...` Groq key |
+| GitHub Actions | Secret | `HF_TOKEN` | Fine-grained HF token with write access to the Space |
+| GitHub Actions | Variable | `HF_SPACE_REPO_ID` | Full Space ID, such as `prachi2712/notebooklm-clone` |
+
+The Groq key belongs only in the Space Secret. Do not put it in GitHub, `.env.example`, a public Space Variable, source code, screenshots, or the screen recording. The Hugging Face token is only for deployment and is not passed to the running app.
 
 ## One-time setup
 
-1. Sign in to Hugging Face as `prachi2712`. Check that your email is verified and the account is more than 30 days old. Hugging Face currently allows accounts meeting those conditions to host up to **two ZeroGPU Spaces for free**. [ZeroGPU eligibility](https://huggingface.co/docs/hub/spaces-zerogpu)
-2. Open [Create a new Space](https://huggingface.co/new-space), choose a name such as `notebooklm-clone`, select **Gradio** as the SDK and **ZeroGPU** as the hardware, and create the Space. Use public visibility if your class needs to open the demonstration URL. The resulting Space ID is `prachi2712/notebooklm-clone` if you used that name. Use the actual name in all later steps. CPU Basic Gradio creation requires a paid plan; selecting ZeroGPU is the free eligible path. [Space creation rules](https://huggingface.co/docs/hub/spaces-overview)
-3. In [Hugging Face access tokens](https://huggingface.co/settings/tokens), create a fine-grained token with **write access to that Space**. Copy it once. This is a deployment token; the running app does not need an inference token. [Token guidance](https://huggingface.co/docs/hub/security-tokens)
-4. Open your GitHub repository, `PrachiPatel556/ITCS_5010_NotebookLM`. Go to **Settings → Secrets and variables → Actions → New repository secret**. Add `HF_TOKEN` with the token from step 3. Add `HF_SPACE_REPO_ID` with the full Space ID, for example `prachi2712/notebooklm-clone`. The username alone will not work. [GitHub secret instructions](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-secrets)
-5. From this project directory, push the committed `main` branch: `git push origin main`. Open the repository's **Actions** tab and watch **Deploy to Hugging Face Space**. The workflow in `.github/workflows/deploy.yml` runs on every push to `main`; you can also start it with **Run workflow** after the secrets exist. [Hugging Face GitHub Actions guide](https://huggingface.co/docs/hub/spaces-github-actions)
-6. Open `https://huggingface.co/spaces/prachi2712/<actual-space-name>` and watch the **Build** logs. The first build installs `requirements.txt` and preloads both public models listed in `README.md`. When the Space says **Running**, use its **App** tab to create a notebook, upload a sample TXT file, ask a question, and generate a quiz. Check the source references below the answer.
+1. Sign in to Hugging Face and verify the account email. Confirm the account is at least 30 days old.
+2. Open [Create a new Space](https://huggingface.co/new-space).
+3. Choose a name such as `notebooklm-clone`, select **Gradio**, select **ZeroGPU**, and use public visibility so the instructor can open it. Create the Space before running the GitHub workflow; this ensures the required free hardware is selected.
+4. Open the Space's **Settings** page. Under **Repository secrets**, add `GROQ_API_KEY` with your real Groq key. Optionally add `GROQ_MODEL` as a non-secret Variable if you want to override `openai/gpt-oss-20b`.
+5. Open [Hugging Face access tokens](https://huggingface.co/settings/tokens). Create a fine-grained token with write access only to the new Space and copy it.
+6. In GitHub, open the repository and go to **Settings → Secrets and variables → Actions**.
+7. Under **Secrets**, add `HF_TOKEN` with the fine-grained token.
+8. Under **Variables**, add `HF_SPACE_REPO_ID` with the complete ID, for example `prachi2712/notebooklm-clone`. The username by itself is not enough. For backward compatibility, the workflow also accepts this value as a secret, but a variable is preferred because the Space ID is not sensitive.
 
-## Runtime and data
+## Deploy
 
-ZeroGPU uses a shared GPU queue and daily usage limits. Hugging Face currently lists five minutes of daily GPU time for a logged-in free user and two minutes for an unauthenticated visitor. Model weights are registered when the Space starts; the first GPU request can still need queue and worker startup time. The local CPU check took about 11 seconds after models were warm, which is not a ZeroGPU benchmark. [ZeroGPU limits](https://huggingface.co/docs/hub/spaces-zerogpu)
+Commit the application files and push the `main` branch:
 
-Gradio Lite can run in a free **Static** Space, but it executes Python in each visitor's browser through Pyodide. This repository's server-side PyTorch models, SQLite notebook storage, and ingestion pipeline are not a drop-in Gradio Lite app. Selecting Static without rewriting those parts would break the application. [Gradio Lite runtime](https://gradio.app/4.44.1/guides/gradio-lite), [Static Spaces](https://huggingface.co/docs/hub/spaces-sdks-static)
+```bash
+git add .
+git commit -m "Deploy NotebookLM with Groq generation"
+git push origin main
+```
 
-Notebook data on the default Space disk is ephemeral. Uploads, chat history, and saved artifacts can disappear after a restart or rebuild. For a durable deployment, mount a Hugging Face Storage Bucket and point `NOTEBOOKLM_DATA_DIR` to its mount path. The app has no visitor authentication, so use public demonstration documents on a public Space. [Space storage](https://huggingface.co/docs/hub/spaces-storage)
+Open the GitHub **Actions** tab and select **Deploy to Hugging Face Space**. The workflow:
 
-If the GitHub Action fails, check that both secret names match exactly and that the token can write to the target Space. If the Space build fails, inspect its Build logs. If chat is slow after the Space is running, check the Run logs and test again after the models have loaded. The local `.env` file is ignored by Git and is not deployed.
+1. installs lightweight test dependencies;
+2. compiles the Python files;
+3. runs the unit tests without calling Groq or downloading the embedding model;
+4. mirrors the repository to the target Space only after tests pass.
+
+The Space then installs `requirements.txt`, preloads `all-MiniLM-L6-v2` from the README metadata, and starts `app.py`. A code sync does not remove Space Secrets.
+
+## Verify the live application
+
+When the Space shows **Running**:
+
+1. Confirm the page says chat is configured for Groq rather than showing the missing-key warning.
+2. Create a notebook named `Campus climate plan`.
+3. Upload `examples/campus_climate_plan.txt` and `examples/campus_climate_meeting.txt`.
+4. Ask: `What is the emissions target and baseline year?`
+5. Confirm the answer contains an `[S1]`-style marker and the UI shows the cited source excerpt.
+6. Generate and download a quiz.
+7. Compare vector and hybrid retrieval in the evaluation tab.
+8. Record the Space and the green GitHub Actions run using [DEMO_SCRIPT.md](DEMO_SCRIPT.md).
+
+## Storage behavior
+
+The free Space disk is ephemeral. Notebook data can disappear after a restart, rebuild, or stop. Keep the sample source files in Git and recreate the demo notebook before recording if necessary.
+
+If durability becomes necessary, attach a Hugging Face Storage Bucket as a read-write volume and set the Space Variable `NOTEBOOKLM_DATA_DIR` to the selected mount path. Do not point it at a read-only mount. The application will create its SQLite database, `sources/`, and `artifacts/` below that path.
+
+## Troubleshooting
+
+| Symptom | Check |
+| --- | --- |
+| Space cannot be created for free | Confirm personal account, verified email, account age over 30 days, and **ZeroGPU** hardware selection |
+| GitHub test job fails | Open the first failing test log; deployment is intentionally blocked until tests pass |
+| Deploy job says `HF_TOKEN` is missing | Add it under GitHub Actions **Secrets**, not Space secrets |
+| Deploy job says `HF_SPACE_REPO_ID` is missing | Add the full owner/name value under GitHub Actions **Variables** |
+| Sync gets 401/403 | Recreate a fine-grained HF token with write access to the exact Space |
+| UI says `GROQ_API_KEY` is missing | Add the key under the Space's **Repository secrets**, then restart the Space |
+| Chat says Groq rejected the key | Replace/revoke the key in the Groq console, update the Space Secret, and restart |
+| Chat reports a rate limit | Wait for the Groq free-plan limit to reset; all public visitors share the owner's allowance |
+| Build fails while installing PyTorch | Confirm README uses Python `3.12.12` and inspect the Space build log for the first dependency error |
+| Ingestion is slow on first use | The Space is downloading/warming the public embedding model; later requests reuse it |
+| Notebooks disappear | Expected on ephemeral disk; use the included samples or attach a Storage Bucket |
+
+## Official references
+
+- [Spaces overview and current free-hosting rules](https://huggingface.co/docs/hub/en/spaces-overview)
+- [ZeroGPU eligibility and limits](https://huggingface.co/docs/hub/spaces-zerogpu)
+- [Space secrets and variables](https://huggingface.co/docs/hub/en/spaces-overview#managing-secrets-and-environment-variables)
+- [Space disk and Storage Buckets](https://huggingface.co/docs/hub/spaces-storage)
+- [GitHub Actions Space sync](https://huggingface.co/docs/hub/spaces-github-actions)
+- [Groq chat completions](https://console.groq.com/docs/text-chat)
+- [Groq free-plan rate limits](https://console.groq.com/docs/rate-limits)
