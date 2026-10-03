@@ -61,9 +61,9 @@ SQLite vectors are intentionally compared in process. That removes an external v
 
 ## Deployment and cost boundaries
 
-GitHub pull requests run compilation and unit tests. A successful push to `main` then uses Hugging Face's `hub-sync` action to mirror repository files to the configured Gradio Space. Space settings and secrets are not stored in Git, so `GROQ_API_KEY` is not copied through GitHub Actions.
+GitHub pull requests run compilation and unit tests. A successful push to `main` then uses the official Hugging Face CLI to upload repository files to the pre-created Gradio Space. Uploading directly to the existing Space lets the deployment token stay scoped to that one repository instead of granting account-wide repository-creation permission. Space settings and secrets are not stored in Git, so `GROQ_API_KEY` is not copied through GitHub Actions.
 
-The free deployment uses a personal ZeroGPU Space because current Hugging Face rules require a paid plan to create ordinary compute-backed Gradio Spaces, while eligible free accounts may host up to two ZeroGPU Spaces. This application keeps embeddings on CPU and calls Groq for generation, so normal app requests do not request a ZeroGPU allocation or consume GPU minutes.
+The deployed application uses a personal Gradio Space on CPU Basic. Hugging Face currently requires a PRO plan to create this compute-backed Space, while the CPU Basic hardware itself has no hourly charge. Embeddings run on CPU and generation is delegated to Groq, so the application does not require paid GPU hardware or a Hugging Face inference endpoint.
 
 The default Space disk is ephemeral. SQLite, uploads, chat, and artifacts can be lost on a rebuild, restart, or stop. This is acceptable for the recorded demonstration. A mounted Storage Bucket and a matching `NOTEBOOKLM_DATA_DIR` are the upgrade path for durable data.
 

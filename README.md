@@ -17,7 +17,7 @@ A full-stack, NotebookLM-style RAG application. Users create separate notebooks,
 
 The deployment is designed for a student budget:
 
-- **Hugging Face ZeroGPU Space:** hosts the Gradio application for free on an eligible personal account.
+- **Hugging Face Gradio CPU Basic Space:** hosts the application with no hourly hardware charge; creating compute-backed Gradio Spaces requires an active PRO plan.
 - **Local Hugging Face embedding model:** `all-MiniLM-L6-v2` runs on the Space CPU; no Hugging Face inference token or paid endpoint is used.
 - **Groq free API:** generates chat answers from retrieved excerpts. The API key stays in a Space Secret.
 - **SQLite:** stores notebook metadata, extracted text, vectors, chat, and artifacts without an external database bill.
@@ -92,15 +92,15 @@ python scripts/evaluate.py --notebook-id YOUR_ID --questions examples/questions.
 
 Add `--generate` to evaluate Groq answers as well. See [EVALUATION.md](EVALUATION.md) and [EVALUATION_RUN.md](EVALUATION_RUN.md) for the method and recorded sample retrieval run.
 
-## Free Hugging Face deployment
+## Hugging Face deployment
 
 The complete setup is in [DEPLOYMENT.md](DEPLOYMENT.md). In short:
 
-1. Create a **Gradio** Space using **ZeroGPU** hardware. Hugging Face currently permits up to two such Spaces for free personal accounts in good standing with a verified email and an account older than 30 days. CPU Basic has no hourly charge, but creating compute-backed Gradio Spaces currently requires a paid plan; ZeroGPU is the free account exception.
+1. Create a public **Gradio** Space using **CPU Basic** hardware. CPU Basic has no hourly hardware charge, but Hugging Face currently requires a PRO plan to create a compute-backed Gradio Space.
 2. Add `GROQ_API_KEY` under the Space's **Settings → Secrets**. Never add it as a public Variable or repository file.
 3. Create a fine-grained Hugging Face write token scoped to the Space.
 4. In GitHub, add `HF_TOKEN` as an Actions secret and `HF_SPACE_REPO_ID` (for example, `prachi2712/notebooklm-clone`) as an Actions variable.
-5. Push `main`. [.github/workflows/deploy.yml](.github/workflows/deploy.yml) runs tests and mirrors the repository to the Space.
+5. Push `main`. [.github/workflows/deploy.yml](.github/workflows/deploy.yml) runs tests and uploads the repository to the existing Space with the official Hugging Face CLI.
 
 GitHub Actions never receives the Groq key. Hugging Face keeps Space secrets outside the repository, so automated code syncs do not overwrite the key. Groq free-plan rate limits apply, and a public Space uses the owner's shared Groq allowance.
 
