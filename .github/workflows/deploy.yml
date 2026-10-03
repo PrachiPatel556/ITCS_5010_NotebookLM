@@ -69,11 +69,22 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_SPACE_REPO_ID: ${{ vars.HF_SPACE_REPO_ID || secrets.HF_SPACE_REPO_ID }}
         run: |
-          hf upload "$HF_SPACE_REPO_ID" . . \
+          set +e
+          upload_output=$(hf upload "$HF_SPACE_REPO_ID" . . \
             --repo-type=space \
             --exclude=".git*" \
             --exclude=".github/*" \
             --exclude="*/.git/*" \
             --exclude="*/.github/*" \
             --delete="*" \
-            --commit-message="Deploy ${GITHUB_REPOSITORY}@${GITHUB_SHA}"
+            --commit-message="Deploy ${GITHUB_REPOSITORY}@${GITHUB_SHA}" 2>&1)
+          upload_status=$?
+          set -e
+
+          safe_output=$(printf '%s\n' "$upload_output" | sed -E 's/hf_[A-Za-z0-9_-]+/[REDACTED]/g')
+          printf '%s\n' "$safe_output"
+          if [ "$upload_status" -ne 0 ]; then
+            annotation=$(printf '%s\n' "$safe_output" | tail -n 12 | tr '\n' ' ' | sed 's/%/%25/g')
+            echo "::error title=Hugging Face upload failed::$annotation"
+            exit "$upload_status"
+          fi
