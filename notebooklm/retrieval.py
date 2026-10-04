@@ -58,7 +58,7 @@ class Retriever:
     """Exhaustive cosine search with an optional keyword rank-fusion approach.
 
     The vector index lives in SQLite as JSON arrays. Exhaustive scoring is a good
-    fit for modest class-project notebooks and requires no external vector service.
+    fit for modest notebooks and requires no external vector service.
     """
 
     def __init__(self, store: NotebookStore, model_name: str = DEFAULT_MODEL) -> None:

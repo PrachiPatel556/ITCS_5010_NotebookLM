@@ -210,7 +210,7 @@ def _download_url(url: str) -> tuple[str, bytes, str]:
         try:
             connection.request("GET", target, headers={
                 "Host": host_header,
-                "User-Agent": "NotebookLM-Student-Project/1.0",
+                "User-Agent": "NotebookLM-App/1.0",
                 "Accept": "text/html, text/plain, application/pdf",
                 "Accept-Encoding": "identity",
             })

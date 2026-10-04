@@ -1,4 +1,4 @@
-"""NotebookLM student project backend."""
+"""NotebookLM application backend."""
 
 from .ingest import chunk_text, ingest_file, ingest_text, ingest_url
 from .retrieval import DEFAULT_MODEL, Retriever

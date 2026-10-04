@@ -1,52 +1,123 @@
-# RAG retrieval evaluation
+# RAG Evaluation
 
-## Methods
+## Goal
 
-The application supports two notebook-scoped retrieval methods in `notebooklm/retrieval.py`:
+The project compares two retrieval methods using the same documents and five questions:
 
-| Method | Retrieval signal | Expected strength |
+- **Vector retrieval** ranks chunks by MiniLM cosine similarity.
+- **Hybrid retrieval** combines vector results with keyword matching.
+
+Both methods return the top three chunks. Groq receives only those chunks when generating an answer.
+
+## Test setup
+
+The evaluation used two fictional campus climate documents containing four chunks. The embeddings were created with `all-MiniLM-L6-v2`, and answers were generated with Groq `openai/gpt-oss-20b`.
+
+Answers were scored from 1 to 5:
+
+- **5:** complete, correct, and supported by citations
+- **4:** correct but missing a requested detail
+- **3:** partly correct
+- **2:** grounded response but missing the expected answer
+- **1:** incorrect or unsupported
+
+### Source chunks
+
+| ID | Source | Main information |
 | --- | --- | --- |
-| `vector` | Cosine similarity between MiniLM question and chunk embeddings | Semantically similar wording |
-| `hybrid` | Reciprocal-rank fusion of vector similarity and lexical term matching | Exact names, acronyms, dates, and uncommon terms |
+| P1 | `campus_climate_plan.txt`, chunk 1 | 35% emissions target, 2030 deadline, 2022 baseline |
+| P2 | `campus_climate_plan.txt`, chunk 2 | Projects, audit, and LEAF-7 public record |
+| M1 | `campus_climate_meeting.txt`, chunk 1 | Budget and LEAF-7 update details |
+| M2 | `campus_climate_meeting.txt`, chunk 2 | Shuttle deadline, offsets, and no named dean |
 
-Both methods use the same ingested chunks, embedding model, notebook corpus, questions, and production `top_k=3`. The generation model receives only those three ranked excerpts. This keeps the comparison focused on retrieval rather than changing multiple variables at once.
+## Results
 
-## Reproduce the comparison
+### Question 1
 
-1. Run `python scripts/seed_examples.py` and copy the printed notebook ID.
-2. Run `python scripts/evaluate.py --notebook-id YOUR_ID --questions examples/questions.json --top-k 3 --output evaluation-run.md` to record retrieved chunks and retrieval latency.
-3. Add `--generate` to include Groq answers when `GROQ_API_KEY` is available locally.
-4. Score every answer against its expected answer and cited excerpts. Treat an unsupported claim or irrelevant citation as an error even when the prose sounds plausible.
-5. Repeat on the same machine after the embedding model is cached. Retrieval latency excludes generation; record model or network latency separately.
+**Question:** What is the emissions reduction target and baseline year?
 
-The checked-in run uses the fictional campus corpus so it is safe to reproduce publicly. It contains a direct fact lookup, an exact acronym, a multi-source question, a causal question, and an unanswerable question.
+**Expected:** A 35% reduction by 2030 compared with the 2022 baseline.
 
-## Completed evaluation, 2026-10-04
+| Method | Retrieved chunks and scores | Retrieval | Answer response | Quality |
+| --- | --- | ---: | ---: | ---: |
+| Vector | M1 (0.503), M2 (0.456), P2 (0.455) | 19.70 ms | 1,806.66 ms | 2/5 |
+| Hybrid | M1 (0.088), P1 (0.078), P2 (0.077) | 19.41 ms | 1,619.85 ms | 5/5 |
 
-The two fictional source files produced four chunks. Retrieval was timed with a warmed `all-MiniLM-L6-v2` model on Windows using production `top_k=3`. Generated answers were obtained from the deployed Hugging Face Space with Groq `openai/gpt-oss-20b`, temperature zero, and separate but identical vector and hybrid notebooks. Separate notebooks prevented one method's conversation history from affecting the other.
+Vector did not retrieve P1 and answered that the information was unavailable. Hybrid retrieved P1 and answered that the target is a 35% reduction by 2030 using 2022 as the baseline, citing `[S2]`.
 
-[EVALUATION_RUN.md](EVALUATION_RUN.md) records every question, ranked chunk, score, generated answer, citation assessment, and response time.
+### Question 2
+
+**Question:** How will people check progress on LEAF-7?
+
+**Expected:** The dashboard publishes quarterly updates, the 2022 baseline, metered and estimated values, and revision explanations.
+
+| Method | Retrieved chunks and scores | Retrieval | Answer response | Quality |
+| --- | --- | ---: | ---: | ---: |
+| Vector | P2 (0.475), M1 (0.386), P1 (0.250) | 17.38 ms | 1,564.91 ms | 4/5 |
+| Hybrid | P2 (0.091), M1 (0.081), P1 (0.079) | 18.58 ms | 1,747.37 ms | 4/5 |
+
+Both answers correctly described the quarterly dashboard and cited the sources. Both left out the metered-versus-estimated and revision details.
+
+### Question 3
+
+**Question:** When must the diesel shuttles be replaced, and how much money was reserved?
+
+**Expected:** June 2027 and $400,000.
+
+| Method | Retrieved chunks and scores | Retrieval | Answer response | Quality |
+| --- | --- | ---: | ---: | ---: |
+| Vector | M2 (0.532), P1 (0.376), M1 (0.343) | 19.91 ms | 2,592.11 ms | 5/5 |
+| Hybrid | M2 (0.091), P1 (0.081), M1 (0.079) | 28.82 ms | 2,683.85 ms | 5/5 |
+
+Both methods returned the correct date and amount with citations to M2 and M1.
+
+### Question 4
+
+**Question:** Why did the committee reject carbon offsets?
+
+**Expected:** Offsets would not reduce the energy used by campus buildings or vehicles.
+
+| Method | Retrieved chunks and scores | Retrieval | Answer response | Quality |
+| --- | --- | ---: | ---: | ---: |
+| Vector | M2 (0.627), M1 (0.618), P2 (0.365) | 22.49 ms | 1,557.20 ms | 5/5 |
+| Hybrid | M2 (0.088), M1 (0.086), P2 (0.077) | 21.82 ms | 1,732.51 ms | 5/5 |
+
+Both methods gave the correct supported answer and cited M2.
+
+### Question 5
+
+**Question:** What is the dean's name?
+
+**Expected:** The sources do not name a dean.
+
+| Method | Retrieved chunks and scores | Retrieval | Answer response | Quality |
+| --- | --- | ---: | ---: | ---: |
+| Vector | M2 (0.161), P1 (0.067), P2 (-0.002) | 18.26 ms | 1,866.39 ms | 5/5 |
+| Hybrid | M2 (0.091), P1 (0.054), P2 (0.050) | 21.21 ms | 1,875.23 ms | 5/5 |
+
+Both methods correctly said that no dean was named and did not invent an answer.
+
+## Summary
 
 | Metric | Vector | Hybrid |
 | --- | ---: | ---: |
-| Questions with complete supporting evidence in top 3 | 4/5 | 5/5 |
-| Human answer-quality total | 21/25 | 24/25 |
-| Mean answer-quality score | 4.2/5 | 4.8/5 |
-| Median retrieval latency | 19.70 ms | 21.21 ms |
-| Median deployed answer round-trip | 1,806.66 ms | 1,747.37 ms |
+| Complete evidence in the top 3 | 4/5 | 5/5 |
+| Total quality score | 21/25 | 24/25 |
+| Average quality | 4.2/5 | 4.8/5 |
+| Median retrieval time | 19.70 ms | 21.21 ms |
+| Median response time | 1,806.66 ms | 1,747.37 ms |
 
-### Scoring criteria
+## Conclusion
 
-- **5:** correct and complete; factual claims have relevant citations.
-- **4:** correct and grounded but omits a requested supporting detail.
-- **3:** partially correct or only partially supported.
-- **2:** grounded behavior, such as an appropriate refusal, but does not answer the expected fact because retrieval missed it.
-- **1:** incorrect or unsupported.
+Hybrid retrieval is the default because it found all required evidence and produced the higher answer-quality score. It was about 1.5 ms slower during retrieval, which is very small compared with the roughly 1.8-second answer response time.
 
-Vector retrieval missed the target-and-baseline chunk for question 1. The model appropriately refused to invent an answer, which was grounded behavior but not a correct task answer. Hybrid retrieval placed the exact target chunk second and produced the complete cited answer. Both methods answered the other four questions correctly; both LEAF-7 answers omitted the requested metered-versus-estimated and revision details, so those answers scored 4 rather than 5.
+This is a small evaluation, so it describes the results for this sample corpus rather than proving that one method is always better.
 
-## Conclusion and tradeoffs
+## Reproducing the test
 
-Hybrid retrieval remains the application's default. It supplied complete top-three evidence for all five questions and improved mean answer quality from 4.2 to 4.8. Its median retrieval time was 1.51 ms slower in this run, which is negligible compared with the approximately 1.7-1.8 second deployed generation round-trip. The end-to-end timing difference favored hybrid slightly, but a five-question single run is too small to claim a generation-speed advantage because network and provider latency dominate.
+```bash
+python scripts/seed_examples.py
+python scripts/evaluate.py --notebook-id YOUR_ID --questions examples/questions.json --top-k 3 --output evaluation-run.md
+```
 
-The result also demonstrates why citations and retrieved excerpts matter: the vector model did not hallucinate when evidence was absent, and the visible context explains why the answer differed. The evaluation is intentionally small and fictional; broader claims would require more documents, repeated trials, and additional question types.
+Add `--generate` to include generated answers when `GROQ_API_KEY` is available.

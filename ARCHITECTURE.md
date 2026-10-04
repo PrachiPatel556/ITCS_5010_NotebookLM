@@ -1,76 +1,64 @@
 # Architecture
 
-## System design
+## Overview
 
 ```mermaid
 flowchart LR
-    User[Browser] --> UI[Gradio app.py]
+    User[User] --> UI[Gradio UI]
     UI --> Service[Notebook service]
-    Service --> Ingest[File and URL ingestion]
-    Ingest --> Embed[MiniLM embeddings on CPU]
-    Embed --> Store[(SQLite + local files)]
-    Service --> Retrieve[Vector or hybrid retrieval]
-    Retrieve --> Store
-    Retrieve --> Prompt[Grounded prompt builder]
-    Prompt --> Groq[Groq Chat Completions API]
-    Groq --> Service
-    Service --> Artifacts[Markdown reports and quizzes]
-    Actions[GitHub Actions] --> Space[Hugging Face Space]
-    Space --> UI
+    Service --> Ingest[Source ingestion]
+    Ingest --> Store[(SQLite and local files)]
+    Service --> Search[Vector or hybrid retrieval]
+    Search --> Store
+    Search --> Groq[Groq API]
+    Groq --> UI
+    Service --> Artifacts[Reports and quizzes]
 ```
 
-This split is deliberate. Hugging Face provides the required deployed application and hosts the public embedding model. Groq provides fast language generation through the student's existing free API key. The Space never needs a paid Hugging Face inference endpoint, and Groq credentials remain server-side.
+The Gradio interface calls the notebook service, which connects ingestion, storage, retrieval, answer generation, and artifact creation.
 
-## Module responsibilities
+## Main modules
 
-| Component | Responsibility |
+| File | Purpose |
 | --- | --- |
-| `app.py` | Gradio notebook manager, upload and URL controls, chat, citations, artifacts, retrieval comparison, and user-facing errors |
-| `notebooklm/service.py` | Coordinates notebook operations, ingestion, retrieval, generation, chat persistence, and artifact files |
-| `notebooklm/storage.py` | SQLite schema and notebook-scoped CRUD for notebooks, sources, chunks, embeddings, messages, and artifacts |
-| `notebooklm/ingest.py` | Safe file/URL extraction, normalization, overlapping chunking, and source metadata |
-| `notebooklm/retrieval.py` | MiniLM embeddings, exhaustive cosine vector search, and hybrid semantic/lexical rank fusion |
-| `notebooklm/generation.py` | Source-context construction, Groq chat calls, provider error handling, and grounded deterministic artifacts |
-| `scripts/evaluate.py` | Repeatable vector-versus-hybrid retrieval and optional generated-answer evaluation |
-| `.github/workflows/deploy.yml` | Pull-request tests and tested `main` deployment to the Space |
+| `app.py` | Gradio interface and user actions |
+| `notebooklm/service.py` | Connects the application features |
+| `notebooklm/ingest.py` | Extracts text and creates overlapping chunks |
+| `notebooklm/retrieval.py` | Creates embeddings and runs vector or hybrid search |
+| `notebooklm/generation.py` | Sends retrieved context to Groq and creates artifacts |
+| `notebooklm/storage.py` | Stores notebooks, sources, chunks, chats, and artifacts |
+| `scripts/evaluate.py` | Compares the two retrieval methods |
 
 ## Data flow
 
-1. **Ingestion:** the selected notebook ID and a supported source enter the service. Text is extracted, normalized, split into roughly 1,200-character chunks with 200-character overlap, and embedded with `all-MiniLM-L6-v2`. SQLite atomically stores the source, chunk metadata, and vectors. Uploaded originals are copied under `sources/<notebook-id>/`.
-2. **Retrieval:** the question is embedded with the same model. Vector search computes cosine similarity across enabled chunks in the active notebook. Hybrid search fuses semantic rank with exact-term ranking. No chunk from another notebook is eligible.
-3. **Generation:** the top three chunks are labeled `[S1]`, `[S2]`, and `[S3]` and limited to a 2,600-character context budget. The system prompt tells Groq to use only those excerpts, treat source content as data, refuse unsupported answers, and cite factual claims. The API key is read only from the server environment.
-4. **Persistence:** the question, answer, citation metadata, and scores are stored under the notebook ID. Gradio renders the saved messages and source excerpts.
-5. **Artifacts:** reports and quizzes select complete statements directly from enabled notebook chunks, retain source markers, save Markdown under `artifacts/<notebook-id>/`, and register the file in SQLite.
+1. The user creates a notebook and adds a file or URL.
+2. The ingestion module extracts the text and divides it into overlapping chunks.
+3. MiniLM creates an embedding for each chunk. The text, metadata, and vectors are saved in SQLite.
+4. When the user asks a question, the selected retrieval method returns the top three chunks from that notebook.
+5. Groq receives only those chunks and generates an answer with citation markers such as `[S1]`.
+6. Chat history and generated reports or quizzes are saved under the same notebook.
 
-## Storage model
+## Storage
 
 ```text
-NOTEBOOKLM_DATA_DIR/
+data/
 ├── notebooklm.db
 ├── sources/
-│   └── <notebook-uuid>/
-│       └── <source-uuid>.<extension>
+│   └── <notebook-id>/
 └── artifacts/
-    └── <notebook-uuid>/
-        └── <kind>-<artifact-uuid>.md
+    └── <notebook-id>/
 ```
 
-Notebook and source IDs are UUIDs. SQL parameters are bound rather than interpolated, foreign keys cascade deletes, and user-controlled names are never used as filesystem path components. URL ingestion rejects credentials, non-HTTP schemes, private/local IP addresses, unsafe redirects, unsupported content types, compressed responses, excessive sizes, and long downloads.
+SQLite stores the application records and embeddings. Uploaded files and generated Markdown artifacts are organized by notebook ID.
 
-SQLite vectors are intentionally compared in process. That removes an external vector database bill and is appropriate for the assignment's small notebooks. It will not scale like a managed vector database for large or highly concurrent corpora.
+## Design choices
 
-## Deployment and cost boundaries
+- `all-MiniLM-L6-v2` runs locally and creates the embeddings.
+- Vector retrieval handles semantic similarity.
+- Hybrid retrieval adds keyword matching for names, dates, and exact terms.
+- Source metadata is kept with every chunk so answers can show citations.
+- GitHub Actions runs the tests before deploying to Hugging Face Spaces.
 
-GitHub pull requests run compilation and unit tests. A successful push to `main` then uses the official Hugging Face CLI to upload repository files to the pre-created Gradio Space. Uploading directly to the existing Space lets the deployment token stay scoped to that one repository instead of granting account-wide repository-creation permission. Space settings and secrets are not stored in Git, so `GROQ_API_KEY` is not copied through GitHub Actions.
+## Limitations
 
-The deployed application uses a personal Gradio Space on CPU Basic. Hugging Face currently requires a PRO plan to create this compute-backed Space, while the CPU Basic hardware itself has no hourly charge. Embeddings run on CPU and generation is delegated to Groq, so the application does not require paid GPU hardware or a Hugging Face inference endpoint.
-
-The default Space disk is ephemeral. SQLite, uploads, chat, and artifacts can be lost on a rebuild, restart, or stop. This is acceptable for the recorded demonstration. A mounted Storage Bucket and a matching `NOTEBOOKLM_DATA_DIR` are the upgrade path for durable data.
-
-## Trust and limitations
-
-- The application is a single-user class project with no authentication or tenant isolation. A public Space shares all notebooks with all visitors.
-- Retrieved text is sent to Groq for question answering. Do not upload private or regulated data to the public demo.
-- The owner supplies one Groq key, so all visitors share that key's free-plan limits.
-- Model answers can still be wrong. The UI exposes retrieved excerpts so answers can be checked against citations.
-- Artifact generation favors grounding over prose quality: it copies source-supported statements instead of asking the model to invent a polished report.
+The public application does not have user accounts, so visitors share the same stored notebooks. Data on the Space may also be cleared when the application is rebuilt or restarted. The deployed application should only be used with non-sensitive documents.
