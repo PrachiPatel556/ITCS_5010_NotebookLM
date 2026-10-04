@@ -1,10 +1,19 @@
-# RAG retrieval evaluation
+# RAG retrieval and answer evaluation
 
-Notebook: **Campus climate plan (example)** (`41222e98-470a-41fc-884d-7fd84e57a13c`)
+Run date: **2026-10-04**
 
-Methods: cosine vector similarity; hybrid vector and lexical ranking. Top-k: 2.
-The embedding model is warmed before each timed comparison. Timings cover retrieval only.
-Answer quality must be scored by a reviewer against the expected answer and cited excerpts.
+Corpus: `campus_climate_plan.txt` and `campus_climate_meeting.txt` (four chunks).
+
+Configuration:
+
+- Embeddings: `sentence-transformers/all-MiniLM-L6-v2`, normalized on CPU
+- Retrieval: cosine vector search versus hybrid vector/lexical rank fusion
+- Production top-k: 3 chunks
+- Generation: Groq `openai/gpt-oss-20b`, temperature 0
+- Retrieval timing: warmed local model; generation timing: live Space round-trip
+- Isolation: identical vector and hybrid notebooks with separate chat histories
+
+Scoring uses the 1-5 criteria defined in [EVALUATION.md](EVALUATION.md).
 
 ## Question 1: What is the emissions reduction target and baseline year?
 
@@ -12,27 +21,35 @@ Expected answer: Northbridge College targets a 35 percent reduction in operation
 
 ### Vector
 
-Retrieval time: **61.98 ms**; chunks retrieved: **2**.
+Retrieval time: **19.70 ms**.
 
-1. **campus_climate_meeting.txt**, chunk 1, score 0.503: Campus Sustainability Committee minutes, March 2026 The committee approved a provisional capital budget of 1.2 million dollars for the library and science hall heat-pump conversion. It reserved 400,000 dollars for the electric shuttle purchase and chargers, and 150,000 dollars for the laboratory freezer replacement program. These allocations must be confirmed after the October 2026 energy audit. The committee asked procurement to prioritize equipment that can be maintained by local technicians a
+1. `campus_climate_meeting.txt`, chunk 1, score 0.503 - budget allocations and the October audit
+2. `campus_climate_meeting.txt`, chunk 2, score 0.456 - offsets, shuttle deadline, and no named dean
+3. `campus_climate_plan.txt`, chunk 2, score 0.455 - projects, audit, and quarterly public record
 
-2. **campus_climate_meeting.txt**, chunk 2, score 0.456: accessible summary of the audit after completion. The committee discussed purchasing carbon offsets as a shortcut. It rejected that proposal because offsets would not reduce energy consumed by campus buildings or vehicles. Members instead supported the heat-pump, shuttle, and freezer measures in the plan. The chair noted that the six diesel shuttles must be replaced by June 2027 to keep the fleet project on schedule. No dean or university president was named in these minutes.
+Generated answer (live round-trip **1,806.66 ms**):
 
-Human answer quality (1–5): _____
+> I couldn't find any mention of an emissions-reduction target or a baseline year in the provided excerpts.
 
-Notes: _____
+Human answer quality: **2/5**.
+
+Assessment: the target chunk was ranked fourth and excluded from the production context. The refusal was properly grounded and contained no unsupported claim, but it did not provide the expected fact.
 
 ### Hybrid
 
-Retrieval time: **50.34 ms**; chunks retrieved: **2**.
+Retrieval time: **19.41 ms**.
 
-1. **campus_climate_meeting.txt**, chunk 1, score 0.088: Campus Sustainability Committee minutes, March 2026 The committee approved a provisional capital budget of 1.2 million dollars for the library and science hall heat-pump conversion. It reserved 400,000 dollars for the electric shuttle purchase and chargers, and 150,000 dollars for the laboratory freezer replacement program. These allocations must be confirmed after the October 2026 energy audit. The committee asked procurement to prioritize equipment that can be maintained by local technicians a
+1. `campus_climate_meeting.txt`, chunk 1, score 0.088 - budget allocations and the October audit
+2. `campus_climate_plan.txt`, chunk 1, score 0.078 - 35 percent target, 2030 deadline, and 2022 baseline
+3. `campus_climate_plan.txt`, chunk 2, score 0.077 - projects, audit, and quarterly public record
 
-2. **campus_climate_plan.txt**, chunk 1, score 0.078: Campus Climate Plan, approved January 2026 The fictional Northbridge College adopted a target to cut operational greenhouse-gas emissions by 35 percent by 2030, compared with its 2022 baseline. The target covers campus electricity, heating fuel, and the college shuttle fleet. It does not count student travel. Facilities will publish a quarterly progress table on the LEAF-7 dashboard. Each table will show measured energy use, estimated emissions, and the difference from the baseline. The faciliti
+Generated answer (live round-trip **1,619.85 ms**):
 
-Human answer quality (1–5): _____
+> The target is a 35% reduction in operational greenhouse-gas emissions by 2030, using the 2022 baseline year as the reference point [S2].
 
-Notes: _____
+Human answer quality: **5/5**.
+
+Assessment: complete and correct; `[S2]` directly supports every factual element.
 
 ## Question 2: How will people check progress on LEAF-7?
 
@@ -40,27 +57,35 @@ Expected answer: The LEAF-7 dashboard publishes quarterly energy and emissions u
 
 ### Vector
 
-Retrieval time: **56.26 ms**; chunks retrieved: **2**.
+Retrieval time: **17.38 ms**.
 
-1. **campus_climate_plan.txt**, chunk 2, score 0.475: units to minus 70 degrees Celsius where research protocols permit. These projects are intended to lower direct fuel use and electricity demand in different parts of the campus. The college will measure actual results rather than claiming that buying offsets is equivalent to cutting emissions. An independent energy audit is scheduled for October 2026, and the next plan update will incorporate its findings. If the audit shows slower progress than forecast, facilities must propose additional buildi
+1. `campus_climate_plan.txt`, chunk 2, score 0.475 - LEAF-7 as the public quarterly record
+2. `campus_climate_meeting.txt`, chunk 1, score 0.386 - quarterly updates, baseline, measurement type, and revisions
+3. `campus_climate_plan.txt`, chunk 1, score 0.250 - quarterly dashboard progress table
 
-2. **campus_climate_meeting.txt**, chunk 1, score 0.386: Campus Sustainability Committee minutes, March 2026 The committee approved a provisional capital budget of 1.2 million dollars for the library and science hall heat-pump conversion. It reserved 400,000 dollars for the electric shuttle purchase and chargers, and 150,000 dollars for the laboratory freezer replacement program. These allocations must be confirmed after the October 2026 energy audit. The committee asked procurement to prioritize equipment that can be maintained by local technicians a
+Generated answer (live round-trip **1,564.91 ms**):
 
-Human answer quality (1–5): _____
+> People can view the quarterly progress on the LEAF-7 dashboard, which publishes energy and emissions updates (starting with a 2022 baseline table) each quarter. [S1][S2]
 
-Notes: _____
+Human answer quality: **4/5**.
+
+Assessment: correct and cited, but it omits that the dashboard distinguishes metered values from estimates and explains revisions.
 
 ### Hybrid
 
-Retrieval time: **53.78 ms**; chunks retrieved: **2**.
+Retrieval time: **18.58 ms**.
 
-1. **campus_climate_plan.txt**, chunk 2, score 0.091: units to minus 70 degrees Celsius where research protocols permit. These projects are intended to lower direct fuel use and electricity demand in different parts of the campus. The college will measure actual results rather than claiming that buying offsets is equivalent to cutting emissions. An independent energy audit is scheduled for October 2026, and the next plan update will incorporate its findings. If the audit shows slower progress than forecast, facilities must propose additional buildi
+1. `campus_climate_plan.txt`, chunk 2, score 0.091 - LEAF-7 as the public quarterly record
+2. `campus_climate_meeting.txt`, chunk 1, score 0.081 - quarterly updates, baseline, measurement type, and revisions
+3. `campus_climate_plan.txt`, chunk 1, score 0.079 - quarterly dashboard progress table
 
-2. **campus_climate_meeting.txt**, chunk 1, score 0.081: Campus Sustainability Committee minutes, March 2026 The committee approved a provisional capital budget of 1.2 million dollars for the library and science hall heat-pump conversion. It reserved 400,000 dollars for the electric shuttle purchase and chargers, and 150,000 dollars for the laboratory freezer replacement program. These allocations must be confirmed after the October 2026 energy audit. The committee asked procurement to prioritize equipment that can be maintained by local technicians a
+Generated answer (live round-trip **1,747.37 ms**):
 
-Human answer quality (1–5): _____
+> People can view the quarterly progress tables on the public LEAF-7 dashboard, which publishes energy use, estimated emissions and the difference from the 2022 baseline each quarter [S1][S2].
 
-Notes: _____
+Human answer quality: **4/5**.
+
+Assessment: correct and cited, but it does not mention the metered-versus-estimated distinction or explained revisions.
 
 ## Question 3: When must the diesel shuttles be replaced, and how much money was reserved for that work?
 
@@ -68,27 +93,35 @@ Expected answer: All six diesel shuttles are to be replaced by June 2027; the co
 
 ### Vector
 
-Retrieval time: **51.44 ms**; chunks retrieved: **2**.
+Retrieval time: **19.91 ms**.
 
-1. **campus_climate_meeting.txt**, chunk 2, score 0.532: accessible summary of the audit after completion. The committee discussed purchasing carbon offsets as a shortcut. It rejected that proposal because offsets would not reduce energy consumed by campus buildings or vehicles. Members instead supported the heat-pump, shuttle, and freezer measures in the plan. The chair noted that the six diesel shuttles must be replaced by June 2027 to keep the fleet project on schedule. No dean or university president was named in these minutes.
+1. `campus_climate_meeting.txt`, chunk 2, score 0.532 - six-shuttle June 2027 deadline
+2. `campus_climate_plan.txt`, chunk 1, score 0.376 - shuttle replacement project
+3. `campus_climate_meeting.txt`, chunk 1, score 0.343 - 400,000-dollar vehicle and charger allocation
 
-2. **campus_climate_plan.txt**, chunk 1, score 0.376: Campus Climate Plan, approved January 2026 The fictional Northbridge College adopted a target to cut operational greenhouse-gas emissions by 35 percent by 2030, compared with its 2022 baseline. The target covers campus electricity, heating fuel, and the college shuttle fleet. It does not count student travel. Facilities will publish a quarterly progress table on the LEAF-7 dashboard. Each table will show measured energy use, estimated emissions, and the difference from the baseline. The faciliti
+Generated answer (live round-trip **2,592.11 ms**):
 
-Human answer quality (1–5): _____
+> The diesel shuttles must be replaced by June 2027, and $400,000 was reserved for that work. [S1][S3]
 
-Notes: _____
+Human answer quality: **5/5**.
+
+Assessment: complete multi-source answer; `[S1]` supports the date and `[S3]` supports the budget.
 
 ### Hybrid
 
-Retrieval time: **63.47 ms**; chunks retrieved: **2**.
+Retrieval time: **28.82 ms**.
 
-1. **campus_climate_meeting.txt**, chunk 2, score 0.091: accessible summary of the audit after completion. The committee discussed purchasing carbon offsets as a shortcut. It rejected that proposal because offsets would not reduce energy consumed by campus buildings or vehicles. Members instead supported the heat-pump, shuttle, and freezer measures in the plan. The chair noted that the six diesel shuttles must be replaced by June 2027 to keep the fleet project on schedule. No dean or university president was named in these minutes.
+1. `campus_climate_meeting.txt`, chunk 2, score 0.091 - six-shuttle June 2027 deadline
+2. `campus_climate_plan.txt`, chunk 1, score 0.081 - shuttle replacement project
+3. `campus_climate_meeting.txt`, chunk 1, score 0.079 - 400,000-dollar vehicle and charger allocation
 
-2. **campus_climate_plan.txt**, chunk 1, score 0.081: Campus Climate Plan, approved January 2026 The fictional Northbridge College adopted a target to cut operational greenhouse-gas emissions by 35 percent by 2030, compared with its 2022 baseline. The target covers campus electricity, heating fuel, and the college shuttle fleet. It does not count student travel. Facilities will publish a quarterly progress table on the LEAF-7 dashboard. Each table will show measured energy use, estimated emissions, and the difference from the baseline. The faciliti
+Generated answer (live round-trip **2,683.85 ms**):
 
-Human answer quality (1–5): _____
+> The diesel shuttles must be replaced by June 2027, and $400,000 was reserved for that work. [S1][S3]
 
-Notes: _____
+Human answer quality: **5/5**.
+
+Assessment: complete multi-source answer with both claims mapped to the relevant excerpts.
 
 ## Question 4: Why did the committee reject carbon offsets?
 
@@ -96,27 +129,35 @@ Expected answer: Offsets would not reduce energy consumed by campus buildings or
 
 ### Vector
 
-Retrieval time: **53.30 ms**; chunks retrieved: **2**.
+Retrieval time: **22.49 ms**.
 
-1. **campus_climate_meeting.txt**, chunk 2, score 0.627: accessible summary of the audit after completion. The committee discussed purchasing carbon offsets as a shortcut. It rejected that proposal because offsets would not reduce energy consumed by campus buildings or vehicles. Members instead supported the heat-pump, shuttle, and freezer measures in the plan. The chair noted that the six diesel shuttles must be replaced by June 2027 to keep the fleet project on schedule. No dean or university president was named in these minutes.
+1. `campus_climate_meeting.txt`, chunk 2, score 0.627 - explicit reason for rejecting offsets
+2. `campus_climate_meeting.txt`, chunk 1, score 0.618 - direct project funding
+3. `campus_climate_plan.txt`, chunk 2, score 0.365 - measuring reductions rather than treating offsets as equivalent
 
-2. **campus_climate_meeting.txt**, chunk 1, score 0.618: Campus Sustainability Committee minutes, March 2026 The committee approved a provisional capital budget of 1.2 million dollars for the library and science hall heat-pump conversion. It reserved 400,000 dollars for the electric shuttle purchase and chargers, and 150,000 dollars for the laboratory freezer replacement program. These allocations must be confirmed after the October 2026 energy audit. The committee asked procurement to prioritize equipment that can be maintained by local technicians a
+Generated answer (live round-trip **1,557.20 ms**):
 
-Human answer quality (1–5): _____
+> The committee rejected carbon offsets because they would not reduce the energy consumed by campus buildings or vehicles. [S1]
 
-Notes: _____
+Human answer quality: **5/5**.
+
+Assessment: concise, correct, and directly supported by `[S1]`.
 
 ### Hybrid
 
-Retrieval time: **39.13 ms**; chunks retrieved: **2**.
+Retrieval time: **21.82 ms**.
 
-1. **campus_climate_meeting.txt**, chunk 2, score 0.088: accessible summary of the audit after completion. The committee discussed purchasing carbon offsets as a shortcut. It rejected that proposal because offsets would not reduce energy consumed by campus buildings or vehicles. Members instead supported the heat-pump, shuttle, and freezer measures in the plan. The chair noted that the six diesel shuttles must be replaced by June 2027 to keep the fleet project on schedule. No dean or university president was named in these minutes.
+1. `campus_climate_meeting.txt`, chunk 2, score 0.088 - explicit reason for rejecting offsets
+2. `campus_climate_meeting.txt`, chunk 1, score 0.086 - direct project funding
+3. `campus_climate_plan.txt`, chunk 2, score 0.077 - measuring reductions rather than treating offsets as equivalent
 
-2. **campus_climate_meeting.txt**, chunk 1, score 0.086: Campus Sustainability Committee minutes, March 2026 The committee approved a provisional capital budget of 1.2 million dollars for the library and science hall heat-pump conversion. It reserved 400,000 dollars for the electric shuttle purchase and chargers, and 150,000 dollars for the laboratory freezer replacement program. These allocations must be confirmed after the October 2026 energy audit. The committee asked procurement to prioritize equipment that can be maintained by local technicians a
+Generated answer (live round-trip **1,732.51 ms**):
 
-Human answer quality (1–5): _____
+> The committee rejected carbon offsets because they would not reduce the energy consumed by campus buildings or vehicles. [S1]
 
-Notes: _____
+Human answer quality: **5/5**.
+
+Assessment: concise, correct, and directly supported by `[S1]`.
 
 ## Question 5: What is the dean's name?
 
@@ -124,28 +165,44 @@ Expected answer: The sources do not name a dean. A grounded answer should say th
 
 ### Vector
 
-Retrieval time: **50.44 ms**; chunks retrieved: **2**.
+Retrieval time: **18.26 ms**.
 
-1. **campus_climate_meeting.txt**, chunk 2, score 0.161: accessible summary of the audit after completion. The committee discussed purchasing carbon offsets as a shortcut. It rejected that proposal because offsets would not reduce energy consumed by campus buildings or vehicles. Members instead supported the heat-pump, shuttle, and freezer measures in the plan. The chair noted that the six diesel shuttles must be replaced by June 2027 to keep the fleet project on schedule. No dean or university president was named in these minutes.
+1. `campus_climate_meeting.txt`, chunk 2, score 0.161 - explicitly states that no dean was named
+2. `campus_climate_plan.txt`, chunk 1, score 0.067 - plan overview and target
+3. `campus_climate_plan.txt`, chunk 2, score -0.002 - projects and audit
 
-2. **campus_climate_plan.txt**, chunk 1, score 0.067: Campus Climate Plan, approved January 2026 The fictional Northbridge College adopted a target to cut operational greenhouse-gas emissions by 35 percent by 2030, compared with its 2022 baseline. The target covers campus electricity, heating fuel, and the college shuttle fleet. It does not count student travel. Facilities will publish a quarterly progress table on the LEAF-7 dashboard. Each table will show measured energy use, estimated emissions, and the difference from the baseline. The faciliti
+Generated answer (live round-trip **1,866.39 ms**):
 
-Human answer quality (1–5): _____
+> No dean is named in the excerpts. [S1]
 
-Notes: _____
+Human answer quality: **5/5**.
+
+Assessment: correct refusal to invent a name; `[S1]` explicitly supports the absence.
 
 ### Hybrid
 
-Retrieval time: **52.11 ms**; chunks retrieved: **2**.
+Retrieval time: **21.21 ms**.
 
-1. **campus_climate_meeting.txt**, chunk 2, score 0.091: accessible summary of the audit after completion. The committee discussed purchasing carbon offsets as a shortcut. It rejected that proposal because offsets would not reduce energy consumed by campus buildings or vehicles. Members instead supported the heat-pump, shuttle, and freezer measures in the plan. The chair noted that the six diesel shuttles must be replaced by June 2027 to keep the fleet project on schedule. No dean or university president was named in these minutes.
+1. `campus_climate_meeting.txt`, chunk 2, score 0.091 - explicitly states that no dean was named
+2. `campus_climate_plan.txt`, chunk 1, score 0.054 - plan overview and target
+3. `campus_climate_plan.txt`, chunk 2, score 0.050 - projects and audit
 
-2. **campus_climate_plan.txt**, chunk 1, score 0.054: Campus Climate Plan, approved January 2026 The fictional Northbridge College adopted a target to cut operational greenhouse-gas emissions by 35 percent by 2030, compared with its 2022 baseline. The target covers campus electricity, heating fuel, and the college shuttle fleet. It does not count student travel. Facilities will publish a quarterly progress table on the LEAF-7 dashboard. Each table will show measured energy use, estimated emissions, and the difference from the baseline. The faciliti
+Generated answer (live round-trip **1,875.23 ms**):
 
-Human answer quality (1–5): _____
+> No dean is named in the excerpts. [S1]
 
-Notes: _____
+Human answer quality: **5/5**.
 
-## Conclusion
+Assessment: correct refusal to invent a name; `[S1]` explicitly supports the absence.
 
-After scoring, summarize which method retrieved more relevant evidence, whether its answers were better grounded, and the latency tradeoff.
+## Results and conclusion
+
+| Metric | Vector | Hybrid |
+| --- | ---: | ---: |
+| Complete supporting context in top 3 | 4/5 | 5/5 |
+| Answer-quality total | 21/25 | 24/25 |
+| Mean answer quality | 4.2/5 | 4.8/5 |
+| Median retrieval latency | 19.70 ms | 21.21 ms |
+| Median live answer round-trip | 1,806.66 ms | 1,747.37 ms |
+
+Hybrid retrieval is the selected default. It recovered the exact target-and-baseline chunk that vector retrieval placed outside the production top three, raising complete-context coverage from four to five questions and mean answer quality from 4.2 to 4.8. Its 1.51 ms median retrieval overhead is operationally negligible compared with the roughly 1.7-1.8 second generation round-trip. The small timing difference in end-to-end responses is dominated by network and provider variability, so the quality improvement—not speed—is the reason for selecting hybrid.

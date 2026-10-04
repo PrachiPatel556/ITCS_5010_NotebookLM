@@ -2,37 +2,51 @@
 
 ## Methods
 
-The application supports two notebook-scoped methods in `notebooklm/retrieval.py`:
+The application supports two notebook-scoped retrieval methods in `notebooklm/retrieval.py`:
 
-| Method | Retrieval signal | Expected strength to test |
+| Method | Retrieval signal | Expected strength |
 | --- | --- | --- |
-| `vector` | Cosine similarity of question and chunk embeddings | Semantically related wording |
-| `hybrid` | Vector similarity combined with lexical term matching | Exact names, acronyms, and uncommon terms |
+| `vector` | Cosine similarity between MiniLM question and chunk embeddings | Semantically similar wording |
+| `hybrid` | Reciprocal-rank fusion of vector similarity and lexical term matching | Exact names, acronyms, dates, and uncommon terms |
 
-Both methods use the same ingested chunks, embedding model, notebook, question set, and top-k value. This isolates the retrieval method as the changed variable. A broader evaluation would also test chunk sizes and different corpora.
+Both methods use the same ingested chunks, embedding model, notebook corpus, questions, and production `top_k=3`. The generation model receives only those three ranked excerpts. This keeps the comparison focused on retrieval rather than changing multiple variables at once.
 
 ## Reproduce the comparison
 
-1. In the app, make one notebook and add at least two representative sources. Get its ID with `python -c "from notebooklm.storage import NotebookStore; print([(n['id'], n['title']) for n in NotebookStore().list_notebooks()])"`. Use documents whose content you can inspect to judge whether each retrieval is relevant. Do not use private documents in a public Space. For a repeatable fictional corpus, run `python scripts/seed_examples.py` and use the printed notebook ID.
-2. Write 5–10 questions in a UTF-8 text file, one question per line, or use `examples/questions.json` with the sample corpus. Include a direct fact lookup, a paraphrase, an exact term or acronym, a question requiring information from more than one source, and a question the sources cannot answer.
-3. With the same Python environment as the app, run `python scripts/evaluate.py --notebook-id YOUR_ID --questions examples/questions.json --top-k 2 --output evaluation-run.md`. The script writes per-question retrieved excerpts and retrieval time for `vector` and `hybrid`. Add `--generate` to include Groq answers; this requires `GROQ_API_KEY` and uses the account's API allowance. The script warms the embedding model before each timed comparison; rerun once after the model is cached to compare steady-state timing.
-4. Inspect the retrieved chunk text/source references. For each method and question, record how many of the top-k chunks actually support an answer. Ask the app the question with the same notebook and assess answer correctness, groundedness, and citation relevance. Record unsupported claims as failures even if the answer sounds plausible.
-5. Summarize the median retrieval time for each method and the number of questions with relevant top-k context. State which method you selected for the app and why, based on observed results.
+1. Run `python scripts/seed_examples.py` and copy the printed notebook ID.
+2. Run `python scripts/evaluate.py --notebook-id YOUR_ID --questions examples/questions.json --top-k 3 --output evaluation-run.md` to record retrieved chunks and retrieval latency.
+3. Add `--generate` to include Groq answers when `GROQ_API_KEY` is available locally.
+4. Score every answer against its expected answer and cited excerpts. Treat an unsupported claim or irrelevant citation as an error even when the prose sounds plausible.
+5. Repeat on the same machine after the embedding model is cached. Retrieval latency excludes generation; record model or network latency separately.
 
-Use the same machine and corpus for the timing comparison. Retrieval latency excludes model generation time. With `--generate`, the report separately records generation time for each method. Answer quality depends on both retrieval and generation, so record retrieved evidence alongside any answer judgment.
+The checked-in run uses the fictional campus corpus so it is safe to reproduce publicly. It contains a direct fact lookup, an exact acronym, a multi-source question, a causal question, and an unanswerable question.
 
-## Observed sample run, 2026-09-19
+## Completed evaluation, 2026-10-04
 
-The two fictional campus climate documents in `examples/` produced four chunks. I compared five questions from `examples/questions.json` at top-k = 2, using the real `all-MiniLM-L6-v2` embedding model on Windows. [EVALUATION_RUN.md](EVALUATION_RUN.md) records each retrieved excerpt, source, rank, and measured retrieval time. In the table below, `meeting 1` means chunk 1 of `campus_climate_meeting.txt`; `plan 1` means chunk 1 of `campus_climate_plan.txt`.
+The two fictional source files produced four chunks. Retrieval was timed with a warmed `all-MiniLM-L6-v2` model on Windows using production `top_k=3`. Generated answers were obtained from the deployed Hugging Face Space with Groq `openai/gpt-oss-20b`, temperature zero, and separate but identical vector and hybrid notebooks. Separate notebooks prevented one method's conversation history from affecting the other.
 
-| Question | Vector top 2; time | Hybrid top 2; time | Does the context support the full expected answer? |
-| --- | --- | --- | --- |
-| 1. Target and baseline | meeting 1, meeting 2; 61.98 ms | meeting 1, plan 1; 50.34 ms | Vector: no (35% target missing). Hybrid: yes. |
-| 2. LEAF-7 progress | plan 2, meeting 1; 56.26 ms | plan 2, meeting 1; 53.78 ms | Both: yes. |
-| 3. Shuttle deadline and budget | meeting 2, plan 1; 51.44 ms | meeting 2, plan 1; 63.47 ms | Both: no (budget is in meeting 1). |
-| 4. Offset decision | meeting 2, meeting 1; 53.30 ms | meeting 2, meeting 1; 39.13 ms | Both: yes. |
-| 5. Dean's name | meeting 2, plan 1; 50.44 ms | meeting 2, plan 1; 52.11 ms | Both: yes, by stating the sources do not name a dean. |
+[EVALUATION_RUN.md](EVALUATION_RUN.md) records every question, ranked chunk, score, generated answer, citation assessment, and response time.
 
-The median retrieval time in this single run was 53.30 ms for vector and 52.11 ms for hybrid. The difference is too small and variable to infer a speed advantage. Hybrid supplied complete evidence for four of five questions, compared with three for vector, so it is the default chat method. The app retrieves up to three chunks to keep local CPU generation practical; the two-chunk evaluation deliberately tests ranking pressure. On question 3, increasing top-k to at least three would include the budget chunk.
+| Metric | Vector | Hybrid |
+| --- | ---: | ---: |
+| Questions with complete supporting evidence in top 3 | 4/5 | 5/5 |
+| Human answer-quality total | 21/25 | 24/25 |
+| Mean answer-quality score | 4.2/5 | 4.8/5 |
+| Median retrieval latency | 19.70 ms | 21.21 ms |
+| Median deployed answer round-trip | 1,806.66 ms | 1,747.37 ms |
 
-**Answer quality limit:** These are human judgments of whether the retrieved context contains the expected facts, not scores of generated answers. This run did not include generation, so correctness, citation placement, and generated-answer latency remain unmeasured. To complete that part of the assignment, rerun with `--generate`, review each answer against the expected answer and citations, and fill the quality fields in the run output. The five-question fictional corpus is a small smoke test, so repeat on representative project sources before making a broader quality claim.
+### Scoring criteria
+
+- **5:** correct and complete; factual claims have relevant citations.
+- **4:** correct and grounded but omits a requested supporting detail.
+- **3:** partially correct or only partially supported.
+- **2:** grounded behavior, such as an appropriate refusal, but does not answer the expected fact because retrieval missed it.
+- **1:** incorrect or unsupported.
+
+Vector retrieval missed the target-and-baseline chunk for question 1. The model appropriately refused to invent an answer, which was grounded behavior but not a correct task answer. Hybrid retrieval placed the exact target chunk second and produced the complete cited answer. Both methods answered the other four questions correctly; both LEAF-7 answers omitted the requested metered-versus-estimated and revision details, so those answers scored 4 rather than 5.
+
+## Conclusion and tradeoffs
+
+Hybrid retrieval remains the application's default. It supplied complete top-three evidence for all five questions and improved mean answer quality from 4.2 to 4.8. Its median retrieval time was 1.51 ms slower in this run, which is negligible compared with the approximately 1.7-1.8 second deployed generation round-trip. The end-to-end timing difference favored hybrid slightly, but a five-question single run is too small to claim a generation-speed advantage because network and provider latency dominate.
+
+The result also demonstrates why citations and retrieved excerpts matter: the vector model did not hallucinate when evidence was absent, and the visible context explains why the answer differed. The evaluation is intentionally small and fictional; broader claims would require more documents, repeated trials, and additional question types.

@@ -111,9 +111,14 @@ GitHub Actions never receives the Groq key. Hugging Face keeps Space secrets out
 - [RAG evaluation method](EVALUATION.md)
 - [Deployment demonstration script](DEMO_SCRIPT.md)
 
-GitHub repository: [PrachiPatel556/ITCS_5010_NotebookLM](https://github.com/PrachiPatel556/ITCS_5010_NotebookLM)
+## Live deliverables
 
-After deployment, add the live Space URL and the 1–2 minute recording URL to this README or the course submission.
+- GitHub repository: [PrachiPatel556/ITCS_5010_NotebookLM](https://github.com/PrachiPatel556/ITCS_5010_NotebookLM)
+- Hugging Face Space: [prachi2712/itcs-5010-notebooklm](https://huggingface.co/spaces/prachi2712/itcs-5010-notebooklm)
+- Direct application: [NotebookLM Clone](https://prachi2712-itcs-5010-notebooklm.hf.space/)
+- Successful CI/CD deployment: [GitHub Actions run 37138123769](https://github.com/PrachiPatel556/ITCS_5010_NotebookLM/actions/runs/37138123769)
+- Completed RAG comparison: [EVALUATION.md](EVALUATION.md) and [EVALUATION_RUN.md](EVALUATION_RUN.md)
+- Deployment demonstration: record the 1-2 minute walkthrough in [DEMO_SCRIPT.md](DEMO_SCRIPT.md), upload it, and add the submitted recording URL here.
 
 ## References
 
