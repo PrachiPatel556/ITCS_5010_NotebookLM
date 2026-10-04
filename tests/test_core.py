@@ -3,17 +3,21 @@
 from __future__ import annotations
 
 import inspect
+import json
 import shutil
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
+import chromadb
+
 from notebooklm.ingest import _check_public_http_url, chunk_text, ingest_text
 from notebooklm.generation import GenerationError, _generate, _groq_client, create_artifact
 from notebooklm.retrieval import Retriever
 from notebooklm.service import NotebookService
 from notebooklm.storage import NotebookStore
+from notebooklm.vector_store import ChromaVectorStore
 
 
 class CoreTests(unittest.TestCase):
@@ -23,7 +27,12 @@ class CoreTests(unittest.TestCase):
         self.workdir = root / uuid4().hex
         self.workdir.mkdir()
         self.addCleanup(shutil.rmtree, self.workdir)
-        self.store = NotebookStore(self.workdir / "notebooklm.db")
+        self.store = NotebookStore(self.workdir / "data")
+        self.vector_store = ChromaVectorStore(
+            client=chromadb.EphemeralClient(),
+            collection_name=f"test-{uuid4().hex}",
+        )
+        self.retriever = Retriever(self.store, vector_store=self.vector_store)
         self.first = self.store.create_notebook("First")
         self.second = self.store.create_notebook("Second")
 
@@ -31,26 +40,51 @@ class CoreTests(unittest.TestCase):
         return ingest_text(
             self.store, notebook_id, name, text,
             embedder=lambda chunks: [vector for _ in chunks],
+            vector_store=self.vector_store,
         )
 
     def test_storage_survives_restart_and_isolates_notebooks(self) -> None:
         source = self._add(self.first["id"], "schedule.txt", "The deadline is Friday.", [1.0, 0.0])
         self._add(self.second["id"], "private.txt", "The budget is secret.", [0.0, 1.0])
         self.store.add_message(self.first["id"], "user", "When is the deadline?")
-        reopened = NotebookStore(self.store.db_path)
+        reopened = NotebookStore(self.store.data_dir)
         self.assertEqual(len(reopened.list_sources(self.first["id"])), 1)
         self.assertEqual(len(reopened.list_messages(self.first["id"])), 1)
         self.assertEqual(reopened.list_messages(self.second["id"]), [])
         with patch("notebooklm.retrieval.embed_texts", return_value=[[1.0, 0.0]]):
-            matches = Retriever(reopened).search(self.first["id"], "deadline", method="vector")
+            matches = Retriever(reopened, vector_store=self.vector_store).search(
+                self.first["id"], "deadline", method="vector"
+            )
         self.assertEqual([item["source_id"] for item in matches], [source["id"]])
         self.assertEqual(reopened.list_chunks(self.second["id"])[0]["source_name"], "private.txt")
+
+    def test_chroma_index_survives_reopen(self) -> None:
+        from chromadb.api.client import SharedSystemClient
+
+        collection_name = f"persistent-{uuid4().hex}"
+        chroma_path = self.workdir / "persistent-chroma"
+        first_index = ChromaVectorStore(chroma_path, collection_name=collection_name)
+        self.addCleanup(SharedSystemClient.clear_system_cache)
+        self.addCleanup(first_index.client._system.stop)
+        source = ingest_text(
+            self.store,
+            self.first["id"],
+            "persistent.txt",
+            "The persistent deadline is Monday.",
+            embedder=lambda chunks: [[1.0, 0.0] for _ in chunks],
+            vector_store=first_index,
+        )
+        reopened_index = ChromaVectorStore(chroma_path, collection_name=collection_name)
+        retriever = Retriever(self.store, vector_store=reopened_index)
+        with patch("notebooklm.retrieval.embed_texts", return_value=[[1.0, 0.0]]):
+            matches = retriever.search(self.first["id"], "deadline", method="vector")
+        self.assertEqual(matches[0]["source_id"], source["id"])
 
     def test_delete_cascades_and_disabled_sources_are_excluded(self) -> None:
         source = self._add(self.first["id"], "notes.txt", "Relevant notes.", [1.0, 0.0])
         self.store.set_source_enabled(source["id"], False)
         with patch("notebooklm.retrieval.embed_texts") as embed:
-            matches = Retriever(self.store).search(self.first["id"], "notes")
+            matches = self.retriever.search(self.first["id"], "notes")
         self.assertEqual(matches, [])
         embed.assert_not_called()
         self.store.delete_notebook(self.first["id"])
@@ -60,7 +94,7 @@ class CoreTests(unittest.TestCase):
 
     def test_service_persists_citations_and_downloadable_quiz(self) -> None:
         self._add(self.first["id"], "guide.txt", "The answer is 42.", [1.0, 0.0])
-        service = NotebookService(self.store, Retriever(self.store))
+        service = NotebookService(self.store, self.retriever)
         with patch("notebooklm.retrieval.embed_texts", return_value=[[1.0, 0.0]]), patch(
             "notebooklm.service.answer_question", return_value="The answer is 42. [S1]"
         ), patch(
@@ -77,13 +111,19 @@ class CoreTests(unittest.TestCase):
     def test_uploaded_file_is_kept_per_notebook_and_removed_with_source(self) -> None:
         upload = self.workdir / "notes.txt"
         upload.write_text("A saved source.", encoding="utf-8")
-        service = NotebookService(self.store)
+        service = NotebookService(self.store, self.retriever)
         with patch("notebooklm.ingest.embed_texts", return_value=[[1.0, 0.0]]):
             source = service.add_files(self.first["id"], [str(upload)])[0]
         saved = service._source_dir(self.first["id"], create=False) / f"{source['id'].replace('-', '')}.txt"
         self.assertEqual(saved.read_bytes(), upload.read_bytes())
         service.delete_source(self.first["id"], source["id"])
         self.assertFalse(saved.exists())
+        self.assertEqual(
+            self.vector_store.collection.get(
+                where={"source_id": {"$eq": source["id"]}}
+            )["ids"],
+            [],
+        )
         with patch("notebooklm.ingest.embed_texts", return_value=[[1.0, 0.0]]):
             service.add_files(self.first["id"], [str(upload)])
         service.delete_notebook(self.first["id"])
@@ -100,6 +140,16 @@ class CoreTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "500,000 character limit"):
                 ingest_text(self.store, self.first["id"], "huge.txt", "A" * 500_001)
         embed.assert_not_called()
+
+    def test_embeddings_are_stored_in_chroma_not_json(self) -> None:
+        self._add(self.first["id"], "vector.txt", "A vector-backed source.", [1.0, 0.0])
+        state = json.loads(
+            (self.store.notebooks_dir / f"{self.first['id']}.json").read_text(encoding="utf-8")
+        )
+        self.assertNotIn("embedding", json.dumps(state))
+        with patch("notebooklm.retrieval.embed_texts", return_value=[[1.0, 0.0]]):
+            matches = self.retriever.search(self.first["id"], "vector", method="vector")
+        self.assertEqual(matches[0]["source_name"], "vector.txt")
 
     def test_web_url_rejects_local_address(self) -> None:
         with patch("notebooklm.ingest.socket.getaddrinfo", return_value=[

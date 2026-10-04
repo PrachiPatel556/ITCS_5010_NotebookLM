@@ -14,6 +14,7 @@ from urllib.parse import urljoin, urlparse
 
 from .retrieval import DEFAULT_MODEL, embed_texts
 from .storage import NotebookStore
+from .vector_store import ChromaVectorStore
 
 
 MAX_FILE_BYTES = 30 * 1024 * 1024
@@ -118,9 +119,10 @@ def _extract_file(path: Path) -> tuple[str, str]:
 def ingest_text(store: NotebookStore, notebook_id: str, name: str, text: str,
                 kind: str = "txt", uri: str | None = None,
                 model_name: str = DEFAULT_MODEL,
-                embedder: Callable[[Sequence[str]], Sequence[Sequence[float]]] | None = None
+                embedder: Callable[[Sequence[str]], Sequence[Sequence[float]]] | None = None,
+                vector_store: ChromaVectorStore | None = None,
                 ) -> dict[str, Any]:
-    """Index extracted text. An embedder can be injected for tests."""
+    """Extract chunks, persist source records, and index embeddings in ChromaDB."""
     normalized = _normalize_text(text)
     if not normalized:
         raise ValueError("Source contains no extractable text (scanned PDFs require OCR)")
@@ -130,14 +132,35 @@ def ingest_text(store: NotebookStore, notebook_id: str, name: str, text: str,
     if len(chunks) > MAX_CHUNKS:
         raise ValueError("Source exceeds the 400 chunk limit")
     vectors = embedder(chunks) if embedder is not None else embed_texts(chunks, model_name)
-    return store.add_source(notebook_id, name, kind, normalized, chunks, vectors, uri)
+    if len(vectors) != len(chunks):
+        raise ValueError("The embedding model must return one vector for every chunk")
+    source = store.add_source(notebook_id, name, kind, normalized, chunks, uri)
+    index = vector_store or ChromaVectorStore(store.data_dir / "chroma")
+    source_chunks = [
+        chunk for chunk in store.list_chunks(notebook_id, enabled_only=False)
+        if chunk["source_id"] == source["id"]
+    ]
+    try:
+        index.add_chunks(source_chunks, vectors)
+    except Exception:
+        store.delete_source(source["id"])
+        try:
+            index.delete_source(source["id"])
+        except Exception:
+            pass
+        raise
+    return source
 
 
 def ingest_file(store: NotebookStore, notebook_id: str, file_path: str | Path,
-                filename: str | None = None, model_name: str = DEFAULT_MODEL) -> dict[str, Any]:
+                filename: str | None = None, model_name: str = DEFAULT_MODEL,
+                vector_store: ChromaVectorStore | None = None) -> dict[str, Any]:
     path = Path(file_path)
     kind, text = _extract_file(path)
-    return ingest_text(store, notebook_id, filename or path.name, text, kind, model_name=model_name)
+    return ingest_text(
+        store, notebook_id, filename or path.name, text, kind,
+        model_name=model_name, vector_store=vector_store,
+    )
 
 
 def _check_public_http_url(url: str) -> tuple[str, int, str]:
@@ -255,7 +278,8 @@ def _download_url(url: str) -> tuple[str, bytes, str]:
 
 
 def ingest_url(store: NotebookStore, notebook_id: str, url: str,
-               model_name: str = DEFAULT_MODEL) -> dict[str, Any]:
+               model_name: str = DEFAULT_MODEL,
+               vector_store: ChromaVectorStore | None = None) -> dict[str, Any]:
     final_url, body, content_type = _download_url(url)
     if content_type == "application/pdf":
         text = _extract_pdf(body)
@@ -275,4 +299,7 @@ def ingest_url(store: NotebookStore, notebook_id: str, url: str,
         for element in soup(["script", "style", "noscript", "nav", "footer", "header", "title"]):
             element.decompose()
         text = _normalize_text(soup.get_text("\n", strip=True))
-    return ingest_text(store, notebook_id, name, text, "url", uri=final_url, model_name=model_name)
+    return ingest_text(
+        store, notebook_id, name, text, "url", uri=final_url,
+        model_name=model_name, vector_store=vector_store,
+    )

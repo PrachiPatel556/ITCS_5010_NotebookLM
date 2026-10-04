@@ -54,7 +54,7 @@ def evaluate(service: NotebookService, notebook_id: str, questions: list[dict[st
         "",
         f"Notebook: **{notebook.get('name', notebook.get('title', notebook_id))}** (`{notebook_id}`)",
         "",
-        f"Methods: cosine vector similarity; hybrid vector and lexical ranking. Top-k: {top_k}.",
+        f"Methods: ChromaDB cosine vector search; hybrid vector and lexical ranking. Top-k: {top_k}.",
         "The embedding model is warmed before each timed comparison. Timings cover retrieval only.",
         "Answer quality must be scored by a reviewer against the expected answer and cited excerpts.",
         "",

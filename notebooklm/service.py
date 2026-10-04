@@ -37,6 +37,7 @@ class NotebookService:
         self.store.rename_notebook(notebook_id, name)
 
     def delete_notebook(self, notebook_id: str) -> None:
+        self.retriever.delete_notebook(notebook_id)
         self.store.delete_notebook(notebook_id)
         source_folder = self._source_dir(notebook_id, create=False)
         if source_folder.exists():
@@ -60,12 +61,16 @@ class NotebookService:
             raise ValueError("Choose at least one PDF, PPTX, or TXT file.")
         results = []
         for path in paths:
-            source = ingest_file(self.store, notebook_id, path)
+            source = ingest_file(
+                self.store, notebook_id, path,
+                vector_store=self.retriever.vector_store,
+            )
             saved_path = self._source_dir(notebook_id) / f"{UUID(source['id']).hex}.{source['kind']}"
             try:
                 shutil.copyfile(path, saved_path)
             except Exception:
                 saved_path.unlink(missing_ok=True)
+                self.retriever.delete_source(source["id"])
                 self.store.delete_source(source["id"])
                 raise
             results.append(source)
@@ -73,13 +78,17 @@ class NotebookService:
 
     def add_url(self, notebook_id: str, url: str) -> dict:
         self._require_notebook(notebook_id)
-        return ingest_url(self.store, notebook_id, (url or "").strip())
+        return ingest_url(
+            self.store, notebook_id, (url or "").strip(),
+            vector_store=self.retriever.vector_store,
+        )
 
     def delete_source(self, notebook_id: str, source_id: str) -> None:
         self._require_notebook(notebook_id)
         source = next((item for item in self.store.list_sources(notebook_id) if item["id"] == source_id), None)
         if source is None:
             raise ValueError("Source does not belong to this notebook.")
+        self.retriever.delete_source(source_id)
         if source["kind"] in {"pdf", "pptx", "txt"}:
             source_folder = self._source_dir(notebook_id, create=False)
             raw_path = source_folder / f"{UUID(source_id).hex}.{source['kind']}"
@@ -184,14 +193,14 @@ class NotebookService:
     def _artifact_dir(self, notebook_id: str, create: bool = True) -> Path:
         # Notebook IDs are UUIDs; never use a user-controlled path component directly.
         safe_id = UUID(str(notebook_id)).hex
-        folder = self.store.db_path.parent / "artifacts" / safe_id
+        folder = self.store.data_dir / "artifacts" / safe_id
         if create:
             folder.mkdir(parents=True, exist_ok=True)
         return folder
 
     def _source_dir(self, notebook_id: str, create: bool = True) -> Path:
         safe_id = UUID(str(notebook_id)).hex
-        folder = self.store.db_path.parent / "sources" / safe_id
+        folder = self.store.data_dir / "sources" / safe_id
         if create:
             folder.mkdir(parents=True, exist_ok=True)
         return folder

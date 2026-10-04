@@ -381,12 +381,16 @@ demo = build_app()
 
 
 if __name__ == "__main__":
-    artifact_root = (_service().store.db_path.parent / "artifacts").resolve()
+    data_root = _service().store.data_dir.resolve()
+    artifact_root = (data_root / "artifacts").resolve()
     artifact_root.mkdir(parents=True, exist_ok=True)
     demo.launch(
         server_name="0.0.0.0",
         server_port=int(os.getenv("PORT", "7860")),
         allowed_paths=[str(artifact_root)],
-        blocked_paths=[str(_service().store.db_path.resolve())],
+        blocked_paths=[str((data_root / "notebooks.json").resolve()),
+                       str((data_root / "notebooks").resolve()),
+                       str((data_root / "sources").resolve()),
+                       str((data_root / "chroma").resolve())],
         max_file_size="30mb",
     )

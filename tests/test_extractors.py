@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import shutil
 import unittest
 from io import BytesIO
 
@@ -11,6 +12,10 @@ from notebooklm.storage import NotebookStore
 from pathlib import Path
 from unittest.mock import patch
 from uuid import uuid4
+
+import chromadb
+
+from notebooklm.vector_store import ChromaVectorStore
 
 
 def _one_page_pdf(text: str) -> bytes:
@@ -63,15 +68,22 @@ class ExtractorTests(unittest.TestCase):
     def test_url_html_excludes_scripts_and_is_indexed(self) -> None:
         root = Path(__file__).resolve().parent / ".tmp"
         root.mkdir(exist_ok=True)
-        db_path = root / f"url-{uuid4().hex}.db"
-        self.addCleanup(db_path.unlink, missing_ok=True)
-        store = NotebookStore(db_path)
+        data_dir = root / f"url-{uuid4().hex}"
+        self.addCleanup(shutil.rmtree, data_dir, True)
+        store = NotebookStore(data_dir)
+        vector_store = ChromaVectorStore(
+            client=chromadb.EphemeralClient(),
+            collection_name=f"test-{uuid4().hex}",
+        )
         notebook = store.create_notebook("Web notes")
         body = b"<html><head><title>Useful page</title></head><body><p>The target is 35 percent.</p><script>ignore me</script></body></html>"
         with patch("notebooklm.ingest._download_url", return_value=("https://example.com/", body, "text/html")), patch(
             "notebooklm.ingest.embed_texts", return_value=[[1.0, 0.0]]
         ):
-            source = ingest_url(store, notebook["id"], "https://example.com/")
+            source = ingest_url(
+                store, notebook["id"], "https://example.com/",
+                vector_store=vector_store,
+            )
         self.assertEqual(source["name"], "Useful page")
         self.assertIn("35 percent", store.list_chunks(notebook["id"])[0]["text"])
         self.assertNotIn("ignore me", store.list_chunks(notebook["id"])[0]["text"])

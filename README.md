@@ -22,7 +22,7 @@ A full-stack Retrieval-Augmented Generation (RAG) application inspired by Notebo
 - Ask questions with visible source citations
 - Compare vector and hybrid retrieval
 - Generate downloadable reports and quizzes with answer keys
-- Store notebook sources, chats, vectors, and artifacts separately
+- Store embeddings in ChromaDB and notebook records in JSON files
 
 ## Setup
 

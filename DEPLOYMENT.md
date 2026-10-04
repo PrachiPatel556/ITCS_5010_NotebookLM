@@ -42,7 +42,7 @@ git commit -m "Update application"
 git push origin main
 ```
 
-The workflow in `.github/workflows/deploy.yml` runs the tests and then uploads the project to the Hugging Face Space. The Space installs `requirements.txt` and starts `app.py`.
+The workflow in `.github/workflows/deploy.yml` runs the tests and then uploads the project to the Hugging Face Space. The Space installs `requirements.txt`, creates the local ChromaDB index when sources are added, and starts `app.py`.
 
 ## Verify
 

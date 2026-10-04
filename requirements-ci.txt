@@ -1,6 +1,7 @@
 # Lightweight dependencies used by GitHub Actions. The embedding model runtime
 # is exercised on the Space; unit tests inject deterministic vectors.
 beautifulsoup4>=4.12,<5
+chromadb>=1.5,<2
 gradio>=5,<7
 groq>=0.31,<2
 pypdf>=4,<7

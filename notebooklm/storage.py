@@ -1,102 +1,40 @@
-"""SQLite persistence for notebook data and its small, local vector index."""
+"""Notebook-scoped JSON and filesystem storage."""
 
 from __future__ import annotations
 
 import json
 import os
-import sqlite3
-from contextlib import contextmanager
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator, Sequence
-from uuid import uuid4
+from typing import Any, Sequence
+from uuid import UUID, uuid4
 
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def _default_db_path() -> Path:
-    explicit = os.getenv("NOTEBOOKLM_DB_PATH")
+def _default_data_dir() -> Path:
+    explicit = os.getenv("NOTEBOOKLM_DATA_DIR")
     if explicit:
         return Path(explicit)
-    data_dir = os.getenv("NOTEBOOKLM_DATA_DIR")
-    if data_dir:
-        return Path(data_dir) / "notebooklm.db"
     space_volume = Path("/data")
-    return (space_volume if space_volume.is_dir() else Path("data")) / "notebooklm.db"
+    return space_volume if space_volume.is_dir() else Path("data")
 
 
 class NotebookStore:
-    """Notebook-scoped storage. All public methods open their own connection."""
+    """Persist notebook metadata and extracted content without a relational database."""
 
-    def __init__(self, db_path: str | Path | None = None) -> None:
-        self.db_path = Path(db_path) if db_path is not None else _default_db_path()
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connection() as db:
-            db.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS notebooks (
-                    id TEXT PRIMARY KEY,
-                    title TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS sources (
-                    id TEXT PRIMARY KEY,
-                    notebook_id TEXT NOT NULL REFERENCES notebooks(id) ON DELETE CASCADE,
-                    name TEXT NOT NULL,
-                    kind TEXT NOT NULL,
-                    uri TEXT,
-                    text TEXT NOT NULL,
-                    enabled INTEGER NOT NULL DEFAULT 1,
-                    created_at TEXT NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_sources_notebook ON sources(notebook_id);
-                CREATE TABLE IF NOT EXISTS chunks (
-                    id TEXT PRIMARY KEY,
-                    notebook_id TEXT NOT NULL REFERENCES notebooks(id) ON DELETE CASCADE,
-                    source_id TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
-                    chunk_index INTEGER NOT NULL,
-                    text TEXT NOT NULL,
-                    embedding TEXT NOT NULL,
-                    UNIQUE(source_id, chunk_index)
-                );
-                CREATE INDEX IF NOT EXISTS idx_chunks_notebook ON chunks(notebook_id);
-                CREATE INDEX IF NOT EXISTS idx_chunks_source ON chunks(source_id);
-                CREATE TABLE IF NOT EXISTS messages (
-                    id TEXT PRIMARY KEY,
-                    notebook_id TEXT NOT NULL REFERENCES notebooks(id) ON DELETE CASCADE,
-                    role TEXT NOT NULL,
-                    content TEXT NOT NULL,
-                    citations TEXT NOT NULL DEFAULT '[]',
-                    created_at TEXT NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_messages_notebook ON messages(notebook_id, created_at);
-                CREATE TABLE IF NOT EXISTS artifacts (
-                    id TEXT PRIMARY KEY,
-                    notebook_id TEXT NOT NULL REFERENCES notebooks(id) ON DELETE CASCADE,
-                    kind TEXT NOT NULL,
-                    title TEXT NOT NULL,
-                    content TEXT NOT NULL,
-                    file_path TEXT,
-                    created_at TEXT NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_artifacts_notebook ON artifacts(notebook_id, created_at);
-                """
-            )
-
-    @contextmanager
-    def _connection(self) -> Iterator[sqlite3.Connection]:
-        db = sqlite3.connect(self.db_path, timeout=30)
-        db.row_factory = sqlite3.Row
-        try:
-            db.execute("PRAGMA foreign_keys = ON")
-            db.execute("PRAGMA busy_timeout = 30000")
-            with db:
-                yield db
-        finally:
-            db.close()
+    def __init__(self, data_dir: str | Path | None = None) -> None:
+        self.data_dir = Path(data_dir) if data_dir is not None else _default_data_dir()
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.notebooks_dir = self.data_dir / "notebooks"
+        self.notebooks_dir.mkdir(parents=True, exist_ok=True)
+        self.index_path = self.data_dir / "notebooks.json"
+        self._lock = threading.RLock()
+        if not self.index_path.exists():
+            self._write_json(self.index_path, [])
 
     @staticmethod
     def _required(value: str, label: str) -> str:
@@ -106,188 +44,293 @@ class NotebookStore:
         return cleaned
 
     @staticmethod
-    def _row(row: sqlite3.Row | None) -> dict[str, Any] | None:
-        return dict(row) if row is not None else None
+    def _safe_id(value: str) -> str:
+        try:
+            return str(UUID(str(value)))
+        except (TypeError, ValueError, AttributeError) as exc:
+            raise KeyError(f"Invalid identifier: {value}") from exc
+
+    @staticmethod
+    def _read_json(path: Path) -> Any:
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            raise
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"Could not read stored notebook data: {path.name}") from exc
+
+    @staticmethod
+    def _write_json(path: Path, value: Any) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+        try:
+            temporary.write_text(
+                json.dumps(value, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def _load_index(self) -> list[dict[str, Any]]:
+        data = self._read_json(self.index_path)
+        if not isinstance(data, list):
+            raise RuntimeError("Notebook index is invalid")
+        return data
+
+    def _notebook_path(self, notebook_id: str) -> Path:
+        return self.notebooks_dir / f"{self._safe_id(notebook_id)}.json"
+
+    def _load_state(self, notebook_id: str) -> dict[str, Any]:
+        path = self._notebook_path(notebook_id)
+        try:
+            state = self._read_json(path)
+        except FileNotFoundError as exc:
+            raise KeyError(f"Notebook {notebook_id} does not exist") from exc
+        if not isinstance(state, dict):
+            raise RuntimeError("Notebook data is invalid")
+        return state
+
+    def _save_state(self, notebook_id: str, state: dict[str, Any]) -> None:
+        self._write_json(self._notebook_path(notebook_id), state)
+
+    def _touch_index(self, notebook_id: str, title: str | None = None) -> dict[str, Any]:
+        index = self._load_index()
+        for notebook in index:
+            if notebook["id"] == notebook_id:
+                if title is not None:
+                    notebook["title"] = title
+                notebook["updated_at"] = _utc_now()
+                self._write_json(self.index_path, index)
+                return dict(notebook)
+        raise KeyError(f"Notebook {notebook_id} does not exist")
 
     def get_notebook(self, notebook_id: str) -> dict[str, Any]:
-        with self._connection() as db:
-            row = db.execute("SELECT * FROM notebooks WHERE id = ?", (notebook_id,)).fetchone()
-        if row is None:
-            raise KeyError(f"Notebook {notebook_id} does not exist")
-        return dict(row)
+        safe_id = self._safe_id(notebook_id)
+        with self._lock:
+            for notebook in self._load_index():
+                if notebook["id"] == safe_id:
+                    return dict(notebook)
+        raise KeyError(f"Notebook {notebook_id} does not exist")
 
     def create_notebook(self, title: str) -> dict[str, Any]:
         now = _utc_now()
-        notebook = {"id": str(uuid4()), "title": self._required(title, "Notebook title"),
-                    "created_at": now, "updated_at": now}
-        with self._connection() as db:
-            db.execute("INSERT INTO notebooks VALUES (:id, :title, :created_at, :updated_at)", notebook)
-        return notebook
+        notebook = {
+            "id": str(uuid4()),
+            "title": self._required(title, "Notebook title"),
+            "created_at": now,
+            "updated_at": now,
+        }
+        state = {
+            "sources": [],
+            "chunks": [],
+            "messages": [],
+            "artifacts": [],
+        }
+        with self._lock:
+            index = self._load_index()
+            self._save_state(notebook["id"], state)
+            index.append(notebook)
+            self._write_json(self.index_path, index)
+        return dict(notebook)
 
     def list_notebooks(self) -> list[dict[str, Any]]:
-        with self._connection() as db:
-            rows = db.execute("SELECT * FROM notebooks ORDER BY updated_at DESC, created_at DESC").fetchall()
-        return [dict(row) for row in rows]
+        with self._lock:
+            index = self._load_index()
+        return sorted(
+            (dict(notebook) for notebook in index),
+            key=lambda notebook: (notebook["updated_at"], notebook["created_at"]),
+            reverse=True,
+        )
 
     def rename_notebook(self, notebook_id: str, title: str) -> dict[str, Any]:
-        with self._connection() as db:
-            cursor = db.execute("UPDATE notebooks SET title = ?, updated_at = ? WHERE id = ?",
-                                (self._required(title, "Notebook title"), _utc_now(), notebook_id))
-            if cursor.rowcount == 0:
-                raise KeyError(f"Notebook {notebook_id} does not exist")
-        return self.get_notebook(notebook_id)
+        safe_id = self._safe_id(notebook_id)
+        with self._lock:
+            self._load_state(safe_id)
+            return self._touch_index(safe_id, self._required(title, "Notebook title"))
 
     def delete_notebook(self, notebook_id: str) -> None:
-        with self._connection() as db:
-            cursor = db.execute("DELETE FROM notebooks WHERE id = ?", (notebook_id,))
-            if cursor.rowcount == 0:
+        safe_id = self._safe_id(notebook_id)
+        with self._lock:
+            index = self._load_index()
+            filtered = [notebook for notebook in index if notebook["id"] != safe_id]
+            if len(filtered) == len(index):
                 raise KeyError(f"Notebook {notebook_id} does not exist")
+            self._write_json(self.index_path, filtered)
+            self._notebook_path(safe_id).unlink(missing_ok=True)
 
     def add_source(self, notebook_id: str, name: str, kind: str, text: str,
-                   chunks: Sequence[str], embeddings: Sequence[Sequence[float]],
-                   uri: str | None = None) -> dict[str, Any]:
-        """Atomically persist a source and every embedding; no partial source on failure."""
-        if len(chunks) != len(embeddings) or not chunks:
-            raise ValueError("A source must have one embedding for every nonempty chunk")
+                   chunks: Sequence[str], uri: str | None = None) -> dict[str, Any]:
+        if not chunks:
+            raise ValueError("A source must have at least one nonempty chunk")
         if not text.strip():
             raise ValueError("Source contains no extractable text")
+        safe_id = self._safe_id(notebook_id)
         source_id = str(uuid4())
-        created_at = _utc_now()
-        with self._connection() as db:
-            if db.execute("SELECT 1 FROM notebooks WHERE id = ?", (notebook_id,)).fetchone() is None:
-                raise KeyError(f"Notebook {notebook_id} does not exist")
-            db.execute(
-                "INSERT INTO sources (id, notebook_id, name, kind, uri, text, enabled, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, 1, ?)",
-                (source_id, notebook_id, self._required(name, "Source name"),
-                 self._required(kind, "Source type"), uri, text, created_at),
-            )
-            db.executemany(
-                "INSERT INTO chunks (id, notebook_id, source_id, chunk_index, text, embedding) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                [(str(uuid4()), notebook_id, source_id, index, chunk,
-                  json.dumps([float(value) for value in embedding]))
-                 for index, (chunk, embedding) in enumerate(zip(chunks, embeddings))],
-            )
-            db.execute("UPDATE notebooks SET updated_at = ? WHERE id = ?", (_utc_now(), notebook_id))
-        return self.get_source(source_id)
+        source = {
+            "id": source_id,
+            "notebook_id": safe_id,
+            "name": self._required(name, "Source name"),
+            "kind": self._required(kind, "Source type"),
+            "uri": uri,
+            "text": text,
+            "enabled": True,
+            "created_at": _utc_now(),
+        }
+        chunk_rows = [
+            {
+                "id": str(uuid4()),
+                "notebook_id": safe_id,
+                "source_id": source_id,
+                "chunk_index": index,
+                "text": chunk,
+            }
+            for index, chunk in enumerate(chunks)
+        ]
+        with self._lock:
+            state = self._load_state(safe_id)
+            state["sources"].append(source)
+            state["chunks"].extend(chunk_rows)
+            self._save_state(safe_id, state)
+            self._touch_index(safe_id)
+        return {**source, "chunk_count": len(chunk_rows)}
+
+    def _find_source(self, source_id: str) -> tuple[str, dict[str, Any], dict[str, Any]]:
+        safe_source_id = self._safe_id(source_id)
+        for notebook in self._load_index():
+            state = self._load_state(notebook["id"])
+            for source in state["sources"]:
+                if source["id"] == safe_source_id:
+                    return notebook["id"], state, source
+        raise KeyError(f"Source {source_id} does not exist")
 
     def get_source(self, source_id: str) -> dict[str, Any]:
-        with self._connection() as db:
-            row = db.execute(
-                "SELECT s.*, (SELECT COUNT(*) FROM chunks c WHERE c.source_id = s.id) AS chunk_count "
-                "FROM sources s WHERE s.id = ?", (source_id,)
-            ).fetchone()
-        if row is None:
-            raise KeyError(f"Source {source_id} does not exist")
-        result = dict(row)
-        result["enabled"] = bool(result["enabled"])
-        return result
+        with self._lock:
+            _, state, source = self._find_source(source_id)
+            count = sum(1 for chunk in state["chunks"] if chunk["source_id"] == source["id"])
+            return {**source, "enabled": bool(source["enabled"]), "chunk_count": count}
 
     def list_sources(self, notebook_id: str) -> list[dict[str, Any]]:
-        self.get_notebook(notebook_id)
-        with self._connection() as db:
-            rows = db.execute(
-                "SELECT s.id, s.notebook_id, s.name, s.kind, s.uri, s.enabled, s.created_at, "
-                "(SELECT COUNT(*) FROM chunks c WHERE c.source_id = s.id) AS chunk_count "
-                "FROM sources s WHERE s.notebook_id = ? ORDER BY s.created_at DESC, s.rowid DESC",
-                (notebook_id,),
-            ).fetchall()
-        result = [dict(row) for row in rows]
-        for source in result:
-            source["enabled"] = bool(source["enabled"])
-        return result
+        safe_id = self.get_notebook(notebook_id)["id"]
+        with self._lock:
+            state = self._load_state(safe_id)
+            sources = []
+            for source in reversed(state["sources"]):
+                count = sum(1 for chunk in state["chunks"] if chunk["source_id"] == source["id"])
+                sources.append({
+                    key: value for key, value in source.items() if key != "text"
+                } | {"enabled": bool(source["enabled"]), "chunk_count": count})
+            return sources
 
     def delete_source(self, source_id: str) -> None:
-        with self._connection() as db:
-            cursor = db.execute("DELETE FROM sources WHERE id = ?", (source_id,))
-            if cursor.rowcount == 0:
-                raise KeyError(f"Source {source_id} does not exist")
+        with self._lock:
+            notebook_id, state, source = self._find_source(source_id)
+            state["sources"] = [
+                item for item in state["sources"] if item["id"] != source["id"]
+            ]
+            state["chunks"] = [
+                chunk for chunk in state["chunks"] if chunk["source_id"] != source["id"]
+            ]
+            self._save_state(notebook_id, state)
+            self._touch_index(notebook_id)
 
     def set_source_enabled(self, source_id: str, enabled: bool) -> dict[str, Any]:
-        with self._connection() as db:
-            cursor = db.execute("UPDATE sources SET enabled = ? WHERE id = ?", (int(enabled), source_id))
-            if cursor.rowcount == 0:
-                raise KeyError(f"Source {source_id} does not exist")
+        with self._lock:
+            notebook_id, state, source = self._find_source(source_id)
+            source["enabled"] = bool(enabled)
+            self._save_state(notebook_id, state)
+            self._touch_index(notebook_id)
         return self.get_source(source_id)
 
     def list_chunks(self, notebook_id: str, enabled_only: bool = True,
                     limit: int | None = None) -> list[dict[str, Any]]:
-        self.get_notebook(notebook_id)
+        safe_id = self.get_notebook(notebook_id)["id"]
         if limit is not None and limit < 1:
             raise ValueError("Chunk limit must be positive")
-        with self._connection() as db:
-            rows = db.execute(
-                "SELECT c.id, c.notebook_id, c.source_id, c.chunk_index, c.text, c.embedding, "
-                "s.name AS source_name, s.kind AS source_kind, s.uri AS source_uri "
-                "FROM chunks c JOIN sources s ON s.id = c.source_id "
-                "WHERE c.notebook_id = ? AND (? = 0 OR s.enabled = 1) "
-                "ORDER BY c.source_id, c.chunk_index LIMIT ?",
-                (notebook_id, int(enabled_only), limit if limit is not None else -1),
-            ).fetchall()
-        result = [dict(row) for row in rows]
-        for chunk in result:
-            chunk["embedding"] = json.loads(chunk["embedding"])
-        return result
+        with self._lock:
+            state = self._load_state(safe_id)
+            sources = {source["id"]: source for source in state["sources"]}
+            chunks = []
+            for chunk in state["chunks"]:
+                source = sources.get(chunk["source_id"])
+                if source is None or (enabled_only and not source["enabled"]):
+                    continue
+                chunks.append({
+                    **chunk,
+                    "source_name": source["name"],
+                    "source_kind": source["kind"],
+                    "source_uri": source.get("uri"),
+                    "source_enabled": bool(source["enabled"]),
+                })
+                if limit is not None and len(chunks) >= limit:
+                    break
+            return chunks
 
     def get_notebook_text(self, notebook_id: str, enabled_only: bool = True) -> str:
-        self.get_notebook(notebook_id)
-        with self._connection() as db:
-            rows = db.execute(
-                "SELECT name, text FROM sources WHERE notebook_id = ? AND (? = 0 OR enabled = 1) "
-                "ORDER BY created_at, rowid", (notebook_id, int(enabled_only))
-            ).fetchall()
-        return "\n\n".join(f"# {row['name']}\n\n{row['text']}" for row in rows)
+        safe_id = self.get_notebook(notebook_id)["id"]
+        with self._lock:
+            state = self._load_state(safe_id)
+            sources = [
+                source for source in state["sources"]
+                if not enabled_only or source["enabled"]
+            ]
+        return "\n\n".join(
+            f"# {source['name']}\n\n{source['text']}" for source in sources
+        )
 
     def add_message(self, notebook_id: str, role: str, content: str,
                     citations: Sequence[dict[str, Any]] | None = None) -> dict[str, Any]:
         if role not in {"user", "assistant", "system"}:
             raise ValueError("Message role must be user, assistant, or system")
-        message = {"id": str(uuid4()), "notebook_id": notebook_id, "role": role,
-                   "content": self._required(content, "Message"),
-                   "citations": list(citations or []), "created_at": _utc_now()}
-        with self._connection() as db:
-            if db.execute("SELECT 1 FROM notebooks WHERE id = ?", (notebook_id,)).fetchone() is None:
-                raise KeyError(f"Notebook {notebook_id} does not exist")
-            db.execute("INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?)",
-                       (message["id"], notebook_id, role, message["content"],
-                        json.dumps(message["citations"]), message["created_at"]))
-        return message
+        safe_id = self.get_notebook(notebook_id)["id"]
+        message = {
+            "id": str(uuid4()),
+            "notebook_id": safe_id,
+            "role": role,
+            "content": self._required(content, "Message"),
+            "citations": list(citations or []),
+            "created_at": _utc_now(),
+        }
+        with self._lock:
+            state = self._load_state(safe_id)
+            state["messages"].append(message)
+            self._save_state(safe_id, state)
+        return dict(message)
 
     def list_messages(self, notebook_id: str) -> list[dict[str, Any]]:
-        self.get_notebook(notebook_id)
-        with self._connection() as db:
-            rows = db.execute("SELECT * FROM messages WHERE notebook_id = ? ORDER BY created_at, rowid",
-                              (notebook_id,)).fetchall()
-        messages = [dict(row) for row in rows]
-        for message in messages:
-            message["citations"] = json.loads(message["citations"])
-        return messages
+        safe_id = self.get_notebook(notebook_id)["id"]
+        with self._lock:
+            return [dict(message) for message in self._load_state(safe_id)["messages"]]
 
     def add_artifact(self, notebook_id: str, kind: str, title: str, content: str,
                      file_path: str | None = None) -> dict[str, Any]:
-        artifact = {"id": str(uuid4()), "notebook_id": notebook_id,
-                    "kind": self._required(kind, "Artifact type"),
-                    "title": self._required(title, "Artifact title"),
-                    "content": self._required(content, "Artifact content"),
-                    "file_path": file_path, "created_at": _utc_now()}
-        with self._connection() as db:
-            if db.execute("SELECT 1 FROM notebooks WHERE id = ?", (notebook_id,)).fetchone() is None:
-                raise KeyError(f"Notebook {notebook_id} does not exist")
-            db.execute("INSERT INTO artifacts VALUES (:id, :notebook_id, :kind, :title, :content, :file_path, :created_at)",
-                       artifact)
-        return artifact
+        safe_id = self.get_notebook(notebook_id)["id"]
+        artifact = {
+            "id": str(uuid4()),
+            "notebook_id": safe_id,
+            "kind": self._required(kind, "Artifact type"),
+            "title": self._required(title, "Artifact title"),
+            "content": self._required(content, "Artifact content"),
+            "file_path": file_path,
+            "created_at": _utc_now(),
+        }
+        with self._lock:
+            state = self._load_state(safe_id)
+            state["artifacts"].append(artifact)
+            self._save_state(safe_id, state)
+        return dict(artifact)
 
     def get_artifact(self, artifact_id: str) -> dict[str, Any]:
-        with self._connection() as db:
-            row = db.execute("SELECT * FROM artifacts WHERE id = ?", (artifact_id,)).fetchone()
-        if row is None:
-            raise KeyError(f"Artifact {artifact_id} does not exist")
-        return dict(row)
+        safe_artifact_id = self._safe_id(artifact_id)
+        with self._lock:
+            for notebook in self._load_index():
+                for artifact in self._load_state(notebook["id"])["artifacts"]:
+                    if artifact["id"] == safe_artifact_id:
+                        return dict(artifact)
+        raise KeyError(f"Artifact {artifact_id} does not exist")
 
     def list_artifacts(self, notebook_id: str) -> list[dict[str, Any]]:
-        self.get_notebook(notebook_id)
-        with self._connection() as db:
-            rows = db.execute("SELECT * FROM artifacts WHERE notebook_id = ? ORDER BY created_at DESC, rowid DESC",
-                              (notebook_id,)).fetchall()
-        return [dict(row) for row in rows]
+        safe_id = self.get_notebook(notebook_id)["id"]
+        with self._lock:
+            artifacts = self._load_state(safe_id)["artifacts"]
+            return [dict(artifact) for artifact in reversed(artifacts)]
